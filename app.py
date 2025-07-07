@@ -1,6 +1,6 @@
 # main.py (FastAPI Application)
 
-from fastapi import FastAPI, File, UploadFile, HTTPException, Depends, status
+from fastapi import FastAPI, File, UploadFile, HTTPException, Depends, status, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from typing import List, Optional
@@ -8,6 +8,7 @@ import base64
 import os
 import httpx # For async HTTP requests
 import asyncio # For concurrent tasks
+import json
 
 # Supabase client (you'll initialize this properly )
 from supabase import create_client, Client
