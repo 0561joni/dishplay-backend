@@ -2,6 +2,7 @@
 
 from fastapi import FastAPI, File, UploadFile, HTTPException, Depends, status, Request
 from fastapi.responses import JSONResponse
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from typing import List, Optional
 import base64
@@ -27,6 +28,15 @@ app = FastAPI(
     title="MenuLens Backend API",
     description="API for processing menu images and finding associated food images.",
     version="0.1.0"
+)
+
+# Allow cross-origin requests for browser-based clients
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 # --- Pydantic Models for Request/Response Bodies ---
@@ -187,10 +197,12 @@ async def search_google_images(query: str) -> List[str]:
 # --- API Endpoints ---
 
 @app.get("/")
+@app.get("/api")
 async def read_root():
     return {"message": "Welcome to MenuLens API!"}
 
 @app.post("/menu/upload", response_model=ProcessedMenuResponse)
+@app.post("/api/menu/upload", response_model=ProcessedMenuResponse)
 async def upload_menu(
     file: UploadFile = File(...),
     current_user: dict = Depends(get_current_user) # Authenticated user
@@ -301,6 +313,7 @@ async def upload_menu(
 # --- User Profile Endpoints ---
 
 @app.get("/user/profile", response_model=UserProfile)
+@app.get("/api/user/profile", response_model=UserProfile)
 async def get_user_profile(current_user: dict = Depends(get_current_user)):
     # The `current_user` dict already contains the profile data fetched by the dependency
     return UserProfile(
