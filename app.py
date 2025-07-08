@@ -63,34 +63,28 @@ class ProcessedMenuResponse(BaseModel):
 
 # --- Dependency for User Authentication (using Supabase Auth) ---
 async def get_current_user(request: Request):
-    # This is a simplified example. In a real app, you'd get the JWT
-    # from the Authorization header, verify it with Supabase, and
-    # retrieve the user object.
-    # For now, let's assume a dummy user or integrate properly with Supabase client.
+    """Validate JWT from Authorization header and fetch user profile."""
     try:
-        # Example: Get JWT from header and verify
         auth_header = request.headers.get("Authorization")
         if not auth_header or not auth_header.startswith("Bearer "):
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
-        
+
         token = auth_header.split(" ")[1]
-        # This part needs proper Supabase JWT verification
-        # For a quick start, you might use a simple check or mock
-        # user = supabase.auth.get_user(token) # This is not how it works directly
-        # You'd typically use `supabase.auth.api.get_user(token)` or similar
-        # or handle it via a middleware.
-        
-        # For demonstration, let's mock a user ID
-        # In production, ensure this is secure and verified
-        user_id = "some-authenticated-user-id" # Replace with actual user ID from Supabase Auth
-        
-        # Fetch user data from your 'users' table
-        response = supabase.from_('users').select('*').eq('id', user_id).single().execute()
+
+        try:
+            user_response = supabase.auth.get_user(token)
+            user_id = user_response.user.id
+        except Exception as e:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token") from e
+
+        response = supabase.from_("users").select("*").eq("id", user_id).single().execute()
         user_data = response.data
         if not user_data:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
-        
+
         return user_data
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=f"Authentication failed: {e}")
 
