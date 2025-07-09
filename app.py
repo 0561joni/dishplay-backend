@@ -309,14 +309,27 @@ async def upload_menu(
 @app.get("/user/profile", response_model=UserProfile)
 @app.get("/api/user/profile", response_model=UserProfile)
 async def get_user_profile(current_user: dict = Depends(get_current_user)):
-    # The `current_user` dict already contains the profile data fetched by the dependency
+    """Return the authenticated user's profile."""
     return UserProfile(
         first_name=current_user['first_name'],
         last_name=current_user['last_name'],
         email=current_user['email'],
-        birthday=str(current_user['birthday']), # Ensure date is string for Pydantic
+        birthday=str(current_user['birthday']),  # Ensure date is string for Pydantic
         gender=current_user['gender'],
-        credits=current_user['credits']
+        credits=current_user['credits'],
+    )
+
+@app.post("/user/profile", response_model=UserProfile)
+@app.post("/api/user/profile", response_model=UserProfile)
+async def post_user_profile(current_user: dict = Depends(get_current_user)):
+    """Return the authenticated user's profile via POST."""
+    return UserProfile(
+        first_name=current_user['first_name'],
+        last_name=current_user['last_name'],
+        email=current_user['email'],
+        birthday=str(current_user['birthday']),  # Ensure date is string for Pydantic
+        gender=current_user['gender'],
+        credits=current_user['credits'],
     )
 
 # Add more endpoints for user updates, credit purchase (future), etc.
