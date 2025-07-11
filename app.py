@@ -7,9 +7,12 @@ from pydantic import BaseModel, Field
 from typing import List, Optional
 import base64
 import os
-import httpx # For async HTTP requests
-import asyncio # For concurrent tasks
+import httpx  # For async HTTP requests
+import asyncio  # For concurrent tasks
 import json
+from io import BytesIO
+from PIL import Image
+import pytesseract
 
 # Supabase client (you'll initialize this properly )
 from supabase import create_client, Client
@@ -151,6 +154,52 @@ async def call_openai_gpt4o(image_base64: str) -> List[dict]:
             raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="An unexpected error occurred during menu extraction.")
 
 
+async def call_openai_parse_text(text: str) -> List[dict]:
+    """Use OpenAI to parse raw OCR text into structured menu items."""
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {OPENAI_API_KEY}"
+    }
+    prompt = (
+        "Extract all menu items from the following text.\n"
+        "For each item, provide its name, description if available, price if available, "
+        "and currency symbol if present. Return the data as JSON in the format:\n"
+        "[{'name': 'Item', 'description': 'desc', 'price': 12.5, 'currency': '$'}]"
+    )
+    payload = {
+        "model": "gpt-4o",
+        "messages": [
+            {"role": "user", "content": f"{prompt}\n\n{text}"}
+        ],
+        "max_tokens": 4000
+    }
+    async with httpx.AsyncClient(timeout=60.0) as client:
+        try:
+            response = await client.post("https://api.openai.com/v1/chat/completions", headers=headers, json=payload)
+            response.raise_for_status()
+            content = response.json()["choices"][0]["message"]["content"]
+            if content.startswith("```json") and content.endswith("```"):
+                content = content[7:-3].strip()
+            return json.loads(content)
+        except Exception as e:
+            print(f"OpenAI parsing failed: {e}")
+            raise
+
+
+async def extract_menu_items(image_bytes: bytes) -> List[dict]:
+    """Extract menu items using open source OCR with OpenAI fallback."""
+    try:
+        loop = asyncio.get_running_loop()
+        text = await loop.run_in_executor(None, lambda: pytesseract.image_to_string(Image.open(BytesIO(image_bytes))))
+        if not text.strip():
+            raise ValueError("OCR returned empty text")
+        return await call_openai_parse_text(text)
+    except Exception as e:
+        print(f"OCR failed, falling back to OpenAI vision: {e}")
+        image_base64 = base64.b64encode(image_bytes).decode("utf-8")
+        return await call_openai_gpt4o(image_base64)
+
+
 async def search_google_images(query: str) -> List[str]:
     """
     Searches Google Custom Search for images based on a query.
@@ -210,13 +259,12 @@ async def upload_menu(
     if user_credits < COST_PER_MENU:
         raise HTTPException(status_code=status.HTTP_402_PAYMENT_REQUIRED, detail="Insufficient credits.")
 
-    # 1. Read and encode image
+    # 1. Read image bytes
     contents = await file.read()
-    image_base64 = base64.b64encode(contents).decode("utf-8")
 
-    # 2. Call OpenAI for menu item extraction
+    # 2. Extract menu items using OCR with OpenAI fallback
     try:
-        extracted_items_raw = await call_openai_gpt4o(image_base64)
+        extracted_items_raw = await extract_menu_items(contents)
     except HTTPException as e:
         raise e # Re-raise HTTP exceptions from helper
     except Exception as e:
