@@ -11,4 +11,9 @@ uvicorn app:app --reload --port 8000
 The backend first attempts OCR with Tesseract via `pytesseract`. If that fails,
 it falls back to OpenAI's vision API.
 
-A `Dockerfile` and `render.yaml` are included for deploying to services like Render.
+A `.python-version` file specifying `3.12` is included so that platforms like
+Render use Python 3.12 instead of newer releases that may not be supported by
+all dependencies.
+
+A `Dockerfile` and `render.yaml` are included for deploying to services like
+Render.
