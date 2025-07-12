@@ -6,12 +6,12 @@ import asyncio
 from datetime import datetime
 import uuid
 
-from app.core.auth import get_current_user, verify_user_credits, deduct_user_credits
-from app.services.image_processor import process_and_optimize_image
-from app.services.openai_service import extract_menu_items
-from app.services.google_search_service import search_images_for_item
-from app.core.supabase_client import supabase_client
-from app.models.menu import MenuResponse, MenuItem
+from ..core.auth import get_current_user, verify_user_credits, deduct_user_credits
+from ..services.image_processor import process_and_optimize_image
+from ..services.openai_service import extract_menu_items
+from ..services.google_search_service import search_images_for_item
+from ..core.supabase_client import supabase_client
+from ..models.menu import MenuResponse, MenuItem
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
