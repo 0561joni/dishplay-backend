@@ -102,7 +102,7 @@ async def upload_menu(
             item_response = supabase_client.table("menu_items").insert(menu_item_data).execute()
             
             # Search for images concurrently
-            search_query = f"{item['name']} food"
+            search_query = f"{item['name']} dish food"
             if item.get("description"):
                 search_query += f" {item['description'][:50]}"  # Add partial description
             
