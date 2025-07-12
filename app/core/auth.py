@@ -7,7 +7,7 @@ import logging
 import os
 from datetime import datetime
 
-from app.core.supabase_client import supabase_client
+from .supabase_client import supabase_client
 
 logger = logging.getLogger(__name__)
 
