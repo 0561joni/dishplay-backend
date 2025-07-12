@@ -15,7 +15,8 @@ def get_supabase_client() -> Client:
     
     if _supabase_client is None:
         supabase_url = os.getenv("SUPABASE_URL")
-        supabase_key = os.getenv("SUPABASE_ANON_KEY")
+        # Use service role key for backend operations
+        supabase_key = os.getenv("SUPABASE_SERVICE_ROLE_KEY") or os.getenv("SUPABASE_ANON_KEY")
         
         if not supabase_url or not supabase_key:
             logger.error("Supabase credentials not found in environment variables")
