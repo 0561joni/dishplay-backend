@@ -4,7 +4,11 @@ from contextlib import asynccontextmanager
 import logging
 from typing import Optional
 import os
+import sys
 from dotenv import load_dotenv
+
+# Add the current directory to Python path
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from app.routers import auth, menu, user
 from app.core.logging import setup_logging
