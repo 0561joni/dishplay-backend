@@ -24,8 +24,18 @@ class AuthError(HTTPException):
 def decode_jwt(token: str) -> Dict:
     """Decode and verify JWT token from Supabase"""
     try:
-        # Get the JWT secret from Supabase settings
-        jwt_secret = os.getenv("SUPABASE_JWT_SECRET", os.getenv("SUPABASE_ANON_KEY"))
+        # Get the JWT secret from environment
+        jwt_secret = os.getenv("SUPABASE_JWT_SECRET")
+        
+        # If no JWT secret is set, try using the anon key (not recommended for production)
+        if not jwt_secret:
+            logger.warning("SUPABASE_JWT_SECRET not set, falling back to SUPABASE_ANON_KEY")
+            jwt_secret = os.getenv("SUPABASE_ANON_KEY")
+        
+        if not jwt_secret:
+            raise AuthError("No JWT secret configured")
+        
+        logger.debug(f"Using JWT secret starting with: {jwt_secret[:20]}...")
         
         # Decode the token
         payload = jwt.decode(
@@ -41,6 +51,7 @@ def decode_jwt(token: str) -> Dict:
             if datetime.utcnow().timestamp() > exp_timestamp:
                 raise AuthError("Token has expired")
         
+        logger.debug(f"Token decoded successfully for user: {payload.get('sub')}")
         return payload
     except JWTError as e:
         logger.error(f"JWT decode error: {str(e)}")
