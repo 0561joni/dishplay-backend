@@ -5,8 +5,10 @@ from typing import Optional, Dict
 import logging
 import os
 from datetime import datetime
+import httpx
+import json
 
-from .supabase_client import supabase_client
+from .supabase_client import supabase_client, get_supabase_client
 
 logger = logging.getLogger(__name__)
 
@@ -21,18 +23,37 @@ class AuthError(HTTPException):
         )
 
 async def get_current_user(credentials: HTTPAuthorizationCredentials = Security(security)) -> Dict:
-    """Get current user from JWT token using Supabase verification"""
+    """Get current user from JWT token using Supabase API"""
     token = credentials.credentials
     
     try:
-        # Use Supabase to verify the token and get user
-        response = supabase_client.auth.get_user(token)
+        # Make a direct API call to Supabase to verify the token
+        supabase_url = os.getenv("SUPABASE_URL")
         
-        if not response or not response.user:
-            raise AuthError("Invalid authentication token")
-        
-        user_id = response.user.id
-        email = response.user.email
+        async with httpx.AsyncClient() as client:
+            response = await client.get(
+                f"{supabase_url}/auth/v1/user",
+                headers={
+                    "Authorization": f"Bearer {token}",
+                    "apikey": os.getenv("SUPABASE_ANON_KEY")
+                }
+            )
+            
+            logger.info(f"Supabase auth response status: {response.status_code}")
+            
+            if response.status_code != 200:
+                logger.error(f"Supabase auth failed: {response.text}")
+                raise AuthError("Invalid authentication token")
+            
+            auth_data = response.json()
+            
+            if not auth_data or "id" not in auth_data:
+                raise AuthError("Invalid authentication token")
+            
+            user_id = auth_data["id"]
+            email = auth_data.get("email", "")
+            
+            logger.info(f"Successfully verified user: {user_id} ({email})")
         
         # Get additional user data from the users table
         user_response = supabase_client.table("users").select("*").eq("id", user_id).single().execute()
@@ -47,6 +68,7 @@ async def get_current_user(credentials: HTTPAuthorizationCredentials = Security(
                 "updated_at": datetime.utcnow().isoformat()
             }
             
+            logger.info(f"Creating new user record for {user_id}")
             supabase_client.table("users").insert(user_data).execute()
             user = user_data
         else:
