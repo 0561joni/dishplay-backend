@@ -10,48 +10,52 @@ from dotenv import load_dotenv
 # Debug: Print current directory and Python path
 print(f"Current working directory: {os.getcwd()}")
 print(f"Script location: {os.path.abspath(__file__)}")
-print(f"Directory contents: {os.listdir('.')}")
+print(f"Directory contents at root: {os.listdir('.')}")
+if 'app' in os.listdir('.'):
+    print(f"Found app directory!")
+    print(f"Contents of app: {os.listdir('app')}")
+else:
+    print("WARNING: app directory not found in current directory")
+    print("Checking parent directory...")
+    parent_dir = os.path.dirname(os.getcwd())
+    if 'app' in os.listdir(parent_dir):
+        print(f"Found app in parent: {parent_dir}")
 
 # Add the current directory to Python path
 current_dir = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, current_dir)
 
-print(f"Python path: {sys.path}")
-print(f"Looking for app directory in: {current_dir}")
-print(f"App directory exists: {os.path.exists(os.path.join(current_dir, 'app'))}")
+print(f"Python path: {sys.path[:3]}...")  # Show first 3 paths
 
 # Now import our modules
 try:
+    # First, let's check if we can import app itself
+    import app
+    print("Successfully imported app module")
+    print(f"App module location: {app.__file__ if hasattr(app, '__file__') else 'No __file__ attribute'}")
+    
+    # Try importing submodules step by step
+    import app.core
+    print("Successfully imported app.core")
+    
+    from app.core.supabase_client import supabase_client
+    print("Successfully imported supabase_client")
+    
     from app.routers import auth, menu, user
     from app.core.logging import setup_logging
-    from app.core.supabase_client import supabase_client
+    
 except ImportError as e:
     print(f"Import error: {e}")
-    print(f"Directory structure:")
-    for root, dirs, files in os.walk("."):
-        level = root.replace(".", "", 1).count(os.sep)
+    print(f"\nChecking file system:")
+    
+    # Show only the app directory structure
+    for root, dirs, files in os.walk("app") if os.path.exists("app") else []:
+        level = root.replace("app", "", 1).count(os.sep)
         indent = " " * 2 * level
         print(f"{indent}{os.path.basename(root)}/")
         subindent = " " * 2 * (level + 1)
-        for file in files:
+        for file in files[:5]:  # Limit to first 5 files per directory
             print(f"{subindent}{file}")
-    
-    # More specific checks
-    print("\nChecking app structure:")
-    app_path = os.path.join(current_dir, 'app')
-    print(f"app/ contents: {os.listdir(app_path) if os.path.exists(app_path) else 'NOT FOUND'}")
-    
-    core_path = os.path.join(app_path, 'core')
-    print(f"app/core/ contents: {os.listdir(core_path) if os.path.exists(core_path) else 'NOT FOUND'}")
-    
-    # Check if __init__.py files exist
-    print(f"\nChecking __init__.py files:")
-    print(f"app/__init__.py exists: {os.path.exists(os.path.join(app_path, '__init__.py'))}")
-    print(f"app/core/__init__.py exists: {os.path.exists(os.path.join(core_path, '__init__.py'))}")
-    
-    # Check if supabase_client.py exists
-    supabase_client_path = os.path.join(core_path, 'supabase_client.py')
-    print(f"app/core/supabase_client.py exists: {os.path.exists(supabase_client_path)}")
     
     raise
 
