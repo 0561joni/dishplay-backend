@@ -1,7 +1,6 @@
 # app/core/auth.py
 from fastapi import HTTPException, Security, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from jose import JWTError, jwt
 from typing import Optional, Dict
 import logging
 import os
@@ -21,65 +20,38 @@ class AuthError(HTTPException):
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-def decode_jwt(token: str) -> Dict:
-    """Decode and verify JWT token from Supabase"""
-    try:
-        # Get the JWT secret from environment
-        jwt_secret = os.getenv("SUPABASE_JWT_SECRET")
-        
-        # If no JWT secret is set, try using the anon key (not recommended for production)
-        if not jwt_secret:
-            logger.warning("SUPABASE_JWT_SECRET not set, falling back to SUPABASE_ANON_KEY")
-            jwt_secret = os.getenv("SUPABASE_ANON_KEY")
-        
-        if not jwt_secret:
-            raise AuthError("No JWT secret configured")
-        
-        logger.debug(f"Using JWT secret starting with: {jwt_secret[:20]}...")
-        
-        # Decode the token
-        payload = jwt.decode(
-            token,
-            jwt_secret,
-            algorithms=["HS256"],
-            options={"verify_aud": False}  # Supabase doesn't always include aud
-        )
-        
-        # Check if token is expired
-        if "exp" in payload:
-            exp_timestamp = payload["exp"]
-            if datetime.utcnow().timestamp() > exp_timestamp:
-                raise AuthError("Token has expired")
-        
-        logger.debug(f"Token decoded successfully for user: {payload.get('sub')}")
-        return payload
-    except JWTError as e:
-        logger.error(f"JWT decode error: {str(e)}")
-        raise AuthError("Invalid authentication token")
-    except Exception as e:
-        logger.error(f"Unexpected auth error: {str(e)}")
-        raise AuthError("Authentication failed")
-
 async def get_current_user(credentials: HTTPAuthorizationCredentials = Security(security)) -> Dict:
-    """Get current user from JWT token"""
+    """Get current user from JWT token using Supabase verification"""
     token = credentials.credentials
     
     try:
-        # Decode the JWT token
-        payload = decode_jwt(token)
+        # Use Supabase to verify the token and get user
+        response = supabase_client.auth.get_user(token)
         
-        # Get user ID from token
-        user_id = payload.get("sub")
-        if not user_id:
-            raise AuthError("Invalid token: no user ID")
+        if not response or not response.user:
+            raise AuthError("Invalid authentication token")
         
-        # Verify user exists in database
-        response = supabase_client.table("users").select("*").eq("id", user_id).single().execute()
+        user_id = response.user.id
+        email = response.user.email
         
-        if not response.data:
-            raise AuthError("User not found")
+        # Get additional user data from the users table
+        user_response = supabase_client.table("users").select("*").eq("id", user_id).single().execute()
         
-        user = response.data
+        if not user_response.data:
+            # If user doesn't exist in our table, create them
+            user_data = {
+                "id": user_id,
+                "email": email,
+                "credits": 10,  # Default credits for new users
+                "created_at": datetime.utcnow().isoformat(),
+                "updated_at": datetime.utcnow().isoformat()
+            }
+            
+            supabase_client.table("users").insert(user_data).execute()
+            user = user_data
+        else:
+            user = user_response.data
+        
         user["token"] = token  # Include token for API calls
         
         return user
