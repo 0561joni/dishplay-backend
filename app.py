@@ -63,6 +63,42 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Request logging middleware
+@app.middleware("http")
+async def log_requests(request: Request, call_next):
+    start_time = datetime.utcnow()
+    
+    # Log request
+    logger.info(f"Request: {request.method} {request.url}")
+    logger.info(f"Headers: {dict(request.headers)}")
+    
+    response = await call_next(request)
+    
+    # Log response
+    process_time = (datetime.utcnow() - start_time).total_seconds()
+    logger.info(f"Response: {response.status_code} (took {process_time:.2f}s)")
+    
+    return response
+
+# Startup event
+@app.on_event("startup")
+async def startup_event():
+    logger.info("MenuLens API starting up...")
+    logger.info(f"Supabase URL: {SUPABASE_URL}")
+    logger.info(f"OpenAI API configured: {'Yes' if OPENAI_API_KEY else 'No'}")
+    logger.info(f"Google CSE configured: {'Yes' if GOOGLE_CSE_API_KEY else 'No'}")
+    
+    # Log all routes
+    routes = []
+    for route in app.routes:
+        if hasattr(route, 'methods') and hasattr(route, 'path'):
+            routes.append(f"{list(route.methods)} {route.path}")
+    logger.info(f"Available routes: {routes}")
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    logger.info("MenuLens API shutting down...")
+
 # --- Pydantic Models ---
 
 class UserProfile(BaseModel):
@@ -383,11 +419,28 @@ async def search_google_images(query: str) -> List[str]:
 
 @app.get("/")
 async def read_root():
-    return {"message": "MenuLens API v1.0", "status": "healthy"}
+    return {"message": "MenuLens API v1.0", "status": "healthy", "version": "1.0.0"}
+
+@app.get("/api")
+async def read_api():
+    return {"message": "MenuLens API v1.0", "status": "healthy", "version": "1.0.0"}
 
 @app.get("/health")
 async def health_check():
     return {"status": "healthy", "timestamp": datetime.utcnow().isoformat()}
+
+@app.get("/debug/routes")
+async def debug_routes():
+    """Debug endpoint to list all available routes"""
+    routes = []
+    for route in app.routes:
+        if hasattr(route, 'methods') and hasattr(route, 'path'):
+            routes.append({
+                "path": route.path,
+                "methods": list(route.methods),
+                "name": route.name
+            })
+    return {"routes": routes}
 
 @app.post("/menu/upload", response_model=ProcessedMenuResponse)
 async def upload_menu(
