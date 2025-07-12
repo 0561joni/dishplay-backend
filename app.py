@@ -28,8 +28,36 @@ GOOGLE_CSE_ID = os.getenv("GOOGLE_CSE_ID") # Your Custom Search Engine ID
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 
-# Initialize Supabase client
-supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+# Initialize Supabase client wrong
+#supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+
+# RIGHT WAY - Method 1: Set JWT token in Supabase client
+async def get_current_user_method1(request: Request):
+    """Correct way - authenticate Supabase client with user's JWT"""
+    try:
+        # Get JWT token from request header
+        auth_header = request.headers.get("Authorization")
+        if not auth_header or not auth_header.startswith("Bearer "):
+            raise HTTPException(status_code=401, detail="Missing authorization header")
+        
+        jwt_token = auth_header[7:]  # Remove "Bearer " prefix
+        
+        # Create Supabase client
+        supabase = create_client(SUPABASE_URL, SUPABASE_ANON_KEY)
+        
+        # IMPORTANT: Set the user's JWT token
+        supabase.auth.set_session(access_token=jwt_token, refresh_token="")
+        
+        # Now RLS policies will work because auth.uid() will return the user ID
+        result = supabase.table('users').select('*').execute()
+        
+        if not result.data:
+            raise HTTPException(status_code=404, detail="User not found")
+            
+        return result.data[0]  # Return first user record
+        
+    except Exception as e:
+        raise HTTPException(status_code=401, detail=f"Authentication failed: {str(e)}")
 
 app = FastAPI(
     title="MenuLens Backend API",
