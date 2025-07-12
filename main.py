@@ -35,6 +35,24 @@ except ImportError as e:
         subindent = " " * 2 * (level + 1)
         for file in files:
             print(f"{subindent}{file}")
+    
+    # More specific checks
+    print("\nChecking app structure:")
+    app_path = os.path.join(current_dir, 'app')
+    print(f"app/ contents: {os.listdir(app_path) if os.path.exists(app_path) else 'NOT FOUND'}")
+    
+    core_path = os.path.join(app_path, 'core')
+    print(f"app/core/ contents: {os.listdir(core_path) if os.path.exists(core_path) else 'NOT FOUND'}")
+    
+    # Check if __init__.py files exist
+    print(f"\nChecking __init__.py files:")
+    print(f"app/__init__.py exists: {os.path.exists(os.path.join(app_path, '__init__.py'))}")
+    print(f"app/core/__init__.py exists: {os.path.exists(os.path.join(core_path, '__init__.py'))}")
+    
+    # Check if supabase_client.py exists
+    supabase_client_path = os.path.join(core_path, 'supabase_client.py')
+    print(f"app/core/supabase_client.py exists: {os.path.exists(supabase_client_path)}")
+    
     raise
 
 # Load environment variables
