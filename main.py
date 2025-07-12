@@ -15,7 +15,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from app.routers import auth, menu, user
 from app.core.logging import setup_logging
-from app.core.supabase_client import supabase_client
+from app.core.supabase_client import get_supabase_client
 
 # Setup logging
 setup_logging()
@@ -45,7 +45,8 @@ async def lifespan(app: FastAPI):
     # Test Supabase connection
     try:
         # Simple health check query
-        response = supabase_client.table("users").select("id").limit(1).execute()
+        client = get_supabase_client()
+        response = client.table("users").select("id").limit(1).execute()
         logger.info("Successfully connected to Supabase")
     except Exception as e:
         logger.error(f"Failed to connect to Supabase: {str(e)}")
@@ -91,7 +92,8 @@ async def health_check():
     """Health check endpoint for monitoring"""
     try:
         # Test database connection
-        response = supabase_client.table("users").select("id").limit(1).execute()
+        client = get_supabase_client()
+        response = client.table("users").select("id").limit(1).execute()
         db_status = "healthy"
     except Exception as e:
         logger.error(f"Database health check failed: {str(e)}")
