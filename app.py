@@ -13,6 +13,10 @@ import json
 from io import BytesIO
 from PIL import Image
 import pytesseract
+import jwt
+import json
+from fastapi import Request, HTTPException
+from fastapi.responses import JSONResponse
 
 # Supabase client (you'll initialize this properly )
 from supabase import create_client, Client
@@ -65,6 +69,39 @@ class ProcessedMenuResponse(BaseModel):
     credits_remaining: int
 
 # --- Dependency for User Authentication (using Supabase Auth) ---
+
+async def debug_jwt_middleware(request: Request, call_next):
+    """Debug middleware to log JWT token information"""
+    
+    # Get authorization header
+    auth_header = request.headers.get("Authorization")
+    
+    if auth_header and auth_header.startswith("Bearer "):
+        token = auth_header[7:]
+        
+        try:
+            # Decode without verification for debugging
+            payload = jwt.decode(token, options={"verify_signature": False})
+            
+            print(f"🔍 JWT Debug Info:")
+            print(f"  User ID (sub): {payload.get('sub')}")
+            print(f"  Email: {payload.get('email')}")
+            print(f"  Role: {payload.get('role')}")
+            print(f"  Issuer: {payload.get('iss')}")
+            print(f"  Audience: {payload.get('aud')}")
+            print(f"  Full payload: {json.dumps(payload, indent=2)}")
+            
+            # Test what Supabase would see
+            print(f"🔧 Supabase Context:")
+            print(f"  auth.uid() = {payload.get('sub')}")
+            print(f"  JWT role = {payload.get('role')}")
+            
+        except Exception as e:
+            print(f"❌ JWT decode error: {e}")
+    
+    response = await call_next(request)
+    return response
+
 async def get_current_user(request: Request):
     """Validate JWT from Authorization header and fetch user profile."""
     try:
