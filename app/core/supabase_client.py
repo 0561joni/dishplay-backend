@@ -2,28 +2,53 @@
 from supabase import create_client, Client
 import os
 import logging
+from typing import Optional
 
 logger = logging.getLogger(__name__)
 
-# Initialize Supabase client
-supabase_url = os.getenv("SUPABASE_URL")
-supabase_key = os.getenv("SUPABASE_ANON_KEY")
+# Don't initialize at module level
+_supabase_client: Optional[Client] = None
 
-if not supabase_url or not supabase_key:
-    logger.error("Supabase credentials not found in environment variables")
-    raise ValueError("Supabase credentials not configured")
+def get_supabase_client() -> Client:
+    """Get or create Supabase client"""
+    global _supabase_client
+    
+    if _supabase_client is None:
+        supabase_url = os.getenv("SUPABASE_URL")
+        supabase_key = os.getenv("SUPABASE_ANON_KEY")
+        
+        if not supabase_url or not supabase_key:
+            logger.error("Supabase credentials not found in environment variables")
+            raise ValueError("Supabase credentials not configured")
+        
+        try:
+            _supabase_client = create_client(supabase_url, supabase_key)
+            logger.info("Successfully initialized Supabase client")
+        except Exception as e:
+            logger.error(f"Failed to initialize Supabase client: {e}")
+            raise
+    
+    return _supabase_client
 
-try:
-    supabase_client: Client = create_client(supabase_url, supabase_key)
-except TypeError as e:
-    logger.error(f"Supabase client initialization error: {e}")
-    # Try initializing without problematic kwargs
-    import supabase
-    # This is a workaround for version compatibility issues
-    supabase_client = None
-except Exception as e:
-    logger.error(f"Failed to initialize Supabase client: {e}")
-    raise
+# For backward compatibility, create a property that initializes on first access
+class SupabaseClientProxy:
+    @property
+    def table(self):
+        return get_supabase_client().table
+    
+    @property
+    def auth(self):
+        return get_supabase_client().auth
+    
+    @property
+    def storage(self):
+        return get_supabase_client().storage
+    
+    @property
+    def functions(self):
+        return get_supabase_client().functions
 
-# Export the client
-__all__ = ["supabase_client"]
+# Export a proxy object
+supabase_client = SupabaseClientProxy()
+
+__all__ = ["supabase_client", "get_supabase_client"]
