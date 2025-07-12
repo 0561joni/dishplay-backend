@@ -2,7 +2,7 @@
 import httpx
 import logging
 import os
-from typing import List, Optional
+from typing import List, Optional, Dict
 import asyncio
 from urllib.parse import quote
 
