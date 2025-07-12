@@ -1,120 +1,139 @@
-# app/core/auth.py
-from fastapi import HTTPException, Security, status
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from jose import JWTError, jwt
-from typing import Optional, Dict
+from fastapi import FastAPI, HTTPException, Depends, UploadFile, File, status
+from fastapi.middleware.cors import CORSMiddleware
+from contextlib import asynccontextmanager
 import logging
+from typing import Optional
 import os
-from datetime import datetime
+import sys
+from dotenv import load_dotenv
 
-from app.core.supabase_client import supabase_client
+# Debug: Print current directory and Python path
+print(f"Current working directory: {os.getcwd()}")
+print(f"Script location: {os.path.abspath(__file__)}")
+print(f"Directory contents: {os.listdir('.')}")
 
+# Add the current directory to Python path
+current_dir = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, current_dir)
+
+print(f"Python path: {sys.path}")
+print(f"Looking for app directory in: {current_dir}")
+print(f"App directory exists: {os.path.exists(os.path.join(current_dir, 'app'))}")
+
+# Now import our modules
+try:
+    from app.routers import auth, menu, user
+    from app.core.logging import setup_logging
+    from app.core.supabase_client import supabase_client
+except ImportError as e:
+    print(f"Import error: {e}")
+    print(f"Directory structure:")
+    for root, dirs, files in os.walk("."):
+        level = root.replace(".", "", 1).count(os.sep)
+        indent = " " * 2 * level
+        print(f"{indent}{os.path.basename(root)}/")
+        subindent = " " * 2 * (level + 1)
+        for file in files:
+            print(f"{subindent}{file}")
+    raise
+
+# Load environment variables
+load_dotenv()
+
+# Setup logging
+setup_logging()
 logger = logging.getLogger(__name__)
 
-security = HTTPBearer()
-
-class AuthError(HTTPException):
-    def __init__(self, detail: str):
-        super().__init__(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail=detail,
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-
-def decode_jwt(token: str) -> Dict:
-    """Decode and verify JWT token from Supabase"""
-    try:
-        # Get the JWT secret from Supabase settings
-        jwt_secret = os.getenv("SUPABASE_JWT_SECRET", os.getenv("SUPABASE_ANON_KEY"))
-        
-        # Decode the token
-        payload = jwt.decode(
-            token,
-            jwt_secret,
-            algorithms=["HS256"],
-            options={"verify_aud": False}  # Supabase doesn't always include aud
-        )
-        
-        # Check if token is expired
-        if "exp" in payload:
-            exp_timestamp = payload["exp"]
-            if datetime.utcnow().timestamp() > exp_timestamp:
-                raise AuthError("Token has expired")
-        
-        return payload
-    except JWTError as e:
-        logger.error(f"JWT decode error: {str(e)}")
-        raise AuthError("Invalid authentication token")
-    except Exception as e:
-        logger.error(f"Unexpected auth error: {str(e)}")
-        raise AuthError("Authentication failed")
-
-async def get_current_user(credentials: HTTPAuthorizationCredentials = Security(security)) -> Dict:
-    """Get current user from JWT token"""
-    token = credentials.credentials
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Handle application startup and shutdown"""
+    logger.info("Starting DishPlay API server...")
     
+    # Verify required environment variables
+    required_vars = [
+        "SUPABASE_URL",
+        "SUPABASE_ANON_KEY",
+        "OPENAI_API_KEY",
+        "GOOGLE_CSE_API_KEY",
+        "GOOGLE_CSE_ID"
+    ]
+    
+    missing_vars = [var for var in required_vars if not os.getenv(var)]
+    if missing_vars:
+        logger.error(f"Missing required environment variables: {', '.join(missing_vars)}")
+        raise RuntimeError(f"Missing required environment variables: {', '.join(missing_vars)}")
+    
+    logger.info("All required environment variables are present")
+    
+    # Test Supabase connection
     try:
-        # Decode the JWT token
-        payload = decode_jwt(token)
-        
-        # Get user ID from token
-        user_id = payload.get("sub")
-        if not user_id:
-            raise AuthError("Invalid token: no user ID")
-        
-        # Verify user exists in database
-        response = supabase_client.table("users").select("*").eq("id", user_id).single().execute()
-        
-        if not response.data:
-            raise AuthError("User not found")
-        
-        user = response.data
-        user["token"] = token  # Include token for API calls
-        
-        return user
-        
-    except AuthError:
-        raise
+        # Simple health check query
+        response = supabase_client.table("users").select("id").limit(1).execute()
+        logger.info("Successfully connected to Supabase")
     except Exception as e:
-        logger.error(f"Error getting current user: {str(e)}")
-        raise AuthError("Failed to authenticate user")
+        logger.error(f"Failed to connect to Supabase: {str(e)}")
+        raise RuntimeError(f"Failed to connect to Supabase: {str(e)}")
+    
+    yield
+    
+    logger.info("Shutting down DishPlay API server...")
 
-async def verify_user_credits(user: Dict, required_credits: int = 1) -> bool:
-    """Verify user has enough credits for an operation"""
-    if user.get("credits", 0) < required_credits:
-        raise HTTPException(
-            status_code=status.HTTP_402_PAYMENT_REQUIRED,
-            detail=f"Insufficient credits. Required: {required_credits}, Available: {user.get('credits', 0)}"
-        )
-    return True
+# Create FastAPI app
+app = FastAPI(
+    title="DishPlay API",
+    description="Backend API for DishPlay menu digitization application",
+    version="1.0.0",
+    lifespan=lifespan
+)
 
-async def deduct_user_credits(user_id: str, credits: int = 1) -> Dict:
-    """Deduct credits from user account"""
+# Configure CORS - you can adjust these settings based on your frontend domain
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # In production, replace with your frontend URL
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Include routers
+app.include_router(auth.router, prefix="/api/auth", tags=["Authentication"])
+app.include_router(menu.router, prefix="/api/menu", tags=["Menu"])
+app.include_router(user.router, prefix="/api/user", tags=["User"])
+
+@app.get("/")
+async def root():
+    """Root endpoint"""
+    return {
+        "message": "Welcome to DishPlay API",
+        "version": "1.0.0",
+        "docs": "/docs"
+    }
+
+@app.get("/health")
+async def health_check():
+    """Health check endpoint for monitoring"""
     try:
-        # Get current credits
-        response = supabase_client.table("users").select("credits").eq("id", user_id).single().execute()
-        current_credits = response.data.get("credits", 0)
-        
-        if current_credits < credits:
-            raise HTTPException(
-                status_code=status.HTTP_402_PAYMENT_REQUIRED,
-                detail="Insufficient credits"
-            )
-        
-        # Update credits
-        new_credits = current_credits - credits
-        update_response = supabase_client.table("users").update({
-            "credits": new_credits,
-            "updated_at": datetime.utcnow().isoformat()
-        }).eq("id", user_id).execute()
-        
-        return {"credits": new_credits}
-        
-    except HTTPException:
-        raise
+        # Test database connection
+        response = supabase_client.table("users").select("id").limit(1).execute()
+        db_status = "healthy"
     except Exception as e:
-        logger.error(f"Error deducting credits: {str(e)}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to deduct credits"
-        )
+        logger.error(f"Database health check failed: {str(e)}")
+        db_status = "unhealthy"
+    
+    return {
+        "status": "healthy" if db_status == "healthy" else "degraded",
+        "services": {
+            "api": "healthy",
+            "database": db_status
+        }
+    }
+
+if __name__ == "__main__":
+    import uvicorn
+    port = int(os.getenv("PORT", 8000))
+    uvicorn.run(
+        "main:app",
+        host="0.0.0.0",
+        port=port,
+        reload=os.getenv("ENVIRONMENT", "production") == "development"
+    )
