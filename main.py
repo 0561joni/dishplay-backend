@@ -7,57 +7,15 @@ import os
 import sys
 from dotenv import load_dotenv
 
-# Debug: Print current directory and Python path
-print(f"Current working directory: {os.getcwd()}")
-print(f"Script location: {os.path.abspath(__file__)}")
-print(f"Directory contents at root: {os.listdir('.')}")
-if 'app' in os.listdir('.'):
-    print(f"Found app directory!")
-    print(f"Contents of app: {os.listdir('app')}")
-else:
-    print("WARNING: app directory not found in current directory")
-    print("Checking parent directory...")
-    parent_dir = os.path.dirname(os.getcwd())
-    if 'app' in os.listdir(parent_dir):
-        print(f"Found app in parent: {parent_dir}")
+# Load environment variables
+load_dotenv()
 
-# Add the current directory to Python path
-current_dir = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, current_dir)
+# Add the current directory to Python path for imports
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-print(f"Python path: {sys.path[:3]}...")  # Show first 3 paths
-
-# Now import our modules
-try:
-    # First, let's check if we can import app itself
-    import app
-    print("Successfully imported app module")
-    print(f"App module location: {app.__file__ if hasattr(app, '__file__') else 'No __file__ attribute'}")
-    
-    # Try importing submodules step by step
-    import app.core
-    print("Successfully imported app.core")
-    
-    from app.core.supabase_client import supabase_client
-    print("Successfully imported supabase_client")
-    
-    from app.routers import auth, menu, user
-    from app.core.logging import setup_logging
-    
-except ImportError as e:
-    print(f"Import error: {e}")
-    print(f"\nChecking file system:")
-    
-    # Show only the app directory structure
-    for root, dirs, files in os.walk("app") if os.path.exists("app") else []:
-        level = root.replace("app", "", 1).count(os.sep)
-        indent = " " * 2 * level
-        print(f"{indent}{os.path.basename(root)}/")
-        subindent = " " * 2 * (level + 1)
-        for file in files[:5]:  # Limit to first 5 files per directory
-            print(f"{subindent}{file}")
-    
-    raise
+from app.routers import auth, menu, user
+from app.core.logging import setup_logging
+from app.core.supabase_client import supabase_client
 
 # Load environment variables
 load_dotenv()
