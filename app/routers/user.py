@@ -4,9 +4,9 @@ from typing import Dict
 import logging
 from datetime import datetime
 
-from ..core.auth import get_current_user
-from ..core.supabase_client import supabase_client
-from ..models.user import UserProfile, UserCreditsUpdate
+from app.core.auth import get_current_user
+from app.core.supabase_client import supabase_client
+from app.models.user import UserProfile, UserCreditsUpdate
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
