@@ -5,6 +5,7 @@ import logging
 import os
 from typing import List, Dict, Optional
 import re
+from app.utils.currency_detector import detect_currency_comprehensive
 
 logger = logging.getLogger(__name__)
 
@@ -20,25 +21,37 @@ For each menu item, extract:
 1. name: The name of the dish (required)
 2. description: A brief description if available (optional)
 3. price: The numerical price without currency symbols (optional, as float)
+4. original_price_text: The original price text as it appears on the menu (optional)
 
-Also try to identify the restaurant name if visible.
+Also extract:
+- restaurant_name: Restaurant name if visible
+- currency_info: Any currency symbols, codes, or hints you can identify
+- location_info: Any address, city, country information if visible
 
 Return the data as a JSON object with this structure:
 {
     "restaurant_name": "Restaurant Name if found",
+    "currency_info": {
+        "symbols_found": ["$", "USD"],
+        "location_hints": ["New York", "USA"],
+        "price_format": "12.99"
+    },
     "items": [
         {
             "name": "Dish Name",
             "description": "Description if available",
-            "price": 12.99
+            "price": 12.99,
+            "original_price_text": "$12.99"
         }
     ]
 }
 
 Important:
 - Extract ALL visible menu items
-- For prices, extract only the number (e.g., 12.99 not $12.99)
-- If no price is visible, omit the price field
+- For prices, extract only the number (e.g., 12.99 not $12.99) but preserve original text
+- Include any currency symbols you see (e.g., $, €, £, ¥, ₹)
+- Note any location information that might indicate currency region
+- If no price is visible, omit both price and original_price_text fields
 - If no description is available, omit the description field
 - Ensure names are properly capitalized
 - Remove any special characters or formatting from item names
@@ -85,9 +98,23 @@ Important:
             else:
                 raise ValueError("No valid JSON found in response")
         
-        # Extract items
+        # Extract items and currency info
         items = data.get("items", [])
         restaurant_name = data.get("restaurant_name")
+        currency_info = data.get("currency_info", {})
+        
+        # Detect currency using comprehensive method
+        symbols_found = currency_info.get("symbols_found", [])
+        location_hints = currency_info.get("location_hints", [])
+        price_texts = [item.get("original_price_text", "") for item in items if item.get("original_price_text")]
+        
+        detected_currency = detect_currency_comprehensive(
+            restaurant_name=restaurant_name,
+            location_text=" ".join(location_hints) if location_hints else None,
+            price_strings=price_texts + symbols_found
+        )
+        
+        logger.info(f"Detected currency: {detected_currency}")
         
         # Validate and clean items
         cleaned_items = []
@@ -97,7 +124,8 @@ Important:
             
             cleaned_item = {
                 "name": clean_text(item["name"]),
-                "restaurant_name": restaurant_name
+                "restaurant_name": restaurant_name,
+                "currency": detected_currency
             }
             
             if item.get("description"):

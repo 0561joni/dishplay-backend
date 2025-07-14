@@ -5,7 +5,7 @@ import logging
 from datetime import datetime
 
 from app.core.auth import get_current_user
-from app.core.supabase_client import supabase_client
+from app.core.async_supabase import async_supabase_client
 from app.models.user import UserProfile, UserCreditsUpdate
 
 router = APIRouter()
@@ -47,7 +47,7 @@ async def update_user_profile(
         # Add updated_at timestamp
         update_data["updated_at"] = datetime.utcnow().isoformat()
         
-        response = supabase_client.table("users").update(update_data).eq("id", current_user["id"]).execute()
+        response = await async_supabase_client.table_update("users", update_data, eq={"id": current_user["id"]})
         
         return {"message": "Profile updated successfully"}
         

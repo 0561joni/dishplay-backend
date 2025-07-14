@@ -7,7 +7,8 @@ import os
 from datetime import datetime
 import requests
 
-from .supabase_client import supabase_client
+from .async_supabase import async_supabase_client
+from .cache import user_cache
 
 logger = logging.getLogger(__name__)
 
@@ -69,10 +70,17 @@ async def get_current_user(credentials: HTTPAuthorizationCredentials = Security(
         
         logger.info(f"Successfully verified user: {user_id} ({email})")
         
+        # Check cache first
+        cache_key = f"user:{user_id}"
+        cached_user = await user_cache.get(cache_key)
+        if cached_user:
+            cached_user["token"] = token  # Always use the current token
+            return cached_user
+        
         # Get additional user data from the users table
         try:
             # Don't chain .single().execute() - execute first, then get single result
-            user_response = supabase_client.table("users").select("*").eq("id", user_id).execute()
+            user_response = await async_supabase_client.table_select("users", "*", eq={"id": user_id})
             
             if user_response.data and len(user_response.data) > 0:
                 user = user_response.data[0]
@@ -93,18 +101,22 @@ async def get_current_user(credentials: HTTPAuthorizationCredentials = Security(
             }
             
             try:
-                supabase_client.table("users").insert(user_data).execute()
+                await async_supabase_client.table_insert("users", user_data)
                 user = user_data
             except Exception as insert_error:
                 logger.error(f"Failed to create user record: {str(insert_error)}")
                 # If insert fails (maybe user exists), try to fetch again
-                user_response = supabase_client.table("users").select("*").eq("id", user_id).single().execute()
-                if user_response.data:
-                    user = user_response.data
+                user_response = await async_supabase_client.table_select("users", "*", eq={"id": user_id})
+                if user_response.data and len(user_response.data) > 0:
+                    user = user_response.data[0]
                 else:
                     raise AuthError("Failed to create or fetch user record")
         
         user["token"] = token  # Include token for API calls
+        
+        # Cache user data (without token)
+        user_data_to_cache = {k: v for k, v in user.items() if k != "token"}
+        await user_cache.set(cache_key, user_data_to_cache, ttl=300)  # Cache for 5 minutes
         
         return user
         
@@ -127,7 +139,7 @@ async def deduct_user_credits(user_id: str, credits: int = 1) -> Dict:
     """Deduct credits from user account"""
     try:
         # Get current credits
-        response = supabase_client.table("users").select("credits").eq("id", user_id).execute()
+        response = await async_supabase_client.table_select("users", "credits", eq={"id": user_id})
         
         if not response.data or len(response.data) == 0:
             raise HTTPException(
@@ -145,10 +157,13 @@ async def deduct_user_credits(user_id: str, credits: int = 1) -> Dict:
         
         # Update credits
         new_credits = current_credits - credits
-        update_response = supabase_client.table("users").update({
+        update_response = await async_supabase_client.table_update("users", {
             "credits": new_credits,
             "updated_at": datetime.utcnow().isoformat()
-        }).eq("id", user_id).execute()
+        }, eq={"id": user_id})
+        
+        # Invalidate user cache
+        await user_cache.delete(f"user:{user_id}")
         
         return {"credits": new_credits}
         

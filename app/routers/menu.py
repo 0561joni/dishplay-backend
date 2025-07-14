@@ -7,10 +7,10 @@ from datetime import datetime
 import uuid
 
 from app.core.auth import get_current_user, verify_user_credits, deduct_user_credits
-from app.services.image_processor import process_and_optimize_image
+from app.services.image_processor import process_and_optimize_image, validate_image_file
 from app.services.openai_service import extract_menu_items
 from app.services.google_search_service import search_images_for_item
-from app.core.supabase_client import supabase_client
+from app.core.async_supabase import async_supabase_client
 from app.models.menu import MenuResponse, MenuItem
 
 router = APIRouter()
@@ -25,6 +25,9 @@ async def upload_menu(
     current_user: Dict = Depends(get_current_user)
 ):
     """Upload and process a menu image"""
+    
+    start_time = datetime.utcnow()
+    logger.info(f"Starting menu upload for user {current_user['id']}")
     
     # Validate file type
     if not menu.content_type or not menu.content_type.startswith("image/"):
@@ -41,18 +44,25 @@ async def upload_menu(
             detail="File too large. Maximum size is 10MB."
         )
     
+    # Validate image file format
+    if not validate_image_file(contents):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid image file. Please upload a valid image format (JPEG, PNG, GIF, etc.)."
+        )
+    
     # Verify user has credits
     await verify_user_credits(current_user, required_credits=1)
     
     # Create menu record
     menu_id = str(uuid.uuid4())
     try:
-        menu_response = supabase_client.table("menus").insert({
+        menu_response = await async_supabase_client.table_insert("menus", {
             "id": menu_id,
             "user_id": current_user["id"],
             "status": "processing",
             "processed_at": datetime.utcnow().isoformat()
-        }).execute()
+        })
         
         logger.info(f"Created menu record {menu_id} for user {current_user['id']}")
     except Exception as e:
@@ -65,17 +75,23 @@ async def upload_menu(
     try:
         # Process and optimize image
         logger.info(f"Processing image for menu {menu_id}")
+        process_start = datetime.utcnow()
         base64_image = await process_and_optimize_image(contents)
+        process_time = (datetime.utcnow() - process_start).total_seconds()
+        logger.info(f"Image processing completed in {process_time:.2f}s")
         
         # Extract menu items using OpenAI
         logger.info(f"Extracting menu items for menu {menu_id}")
+        extraction_start = datetime.utcnow()
         extracted_items = await extract_menu_items(base64_image)
+        extraction_time = (datetime.utcnow() - extraction_start).total_seconds()
+        logger.info(f"Menu extraction completed in {extraction_time:.2f}s, found {len(extracted_items) if extracted_items else 0} items")
         
         if not extracted_items:
             # Update menu status to failed
-            supabase_client.table("menus").update({
+            await async_supabase_client.table_update("menus", {
                 "status": "failed"
-            }).eq("id", menu_id).execute()
+            }, eq={"id": menu_id})
             
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -84,44 +100,66 @@ async def upload_menu(
         
         # Process each menu item
         menu_items = []
+        menu_item_records = []
+        
+        # First, create all menu item records
         for index, item in enumerate(extracted_items):
-            # Create menu item record
             menu_item_id = str(uuid.uuid4())
-            
             menu_item_data = {
                 "id": menu_item_id,
                 "menu_id": menu_id,
                 "item_name": item["name"],
                 "description": item.get("description"),
                 "price": item.get("price"),
-                "currency": "USD",  # Default to USD
+                "currency": item.get("currency", "USD"),  # Use detected currency or default to USD
                 "order_index": index
             }
-            
-            # Insert menu item
-            item_response = supabase_client.table("menu_items").insert(menu_item_data).execute()
-            
-            # Search for images concurrently
+            menu_item_records.append((menu_item_id, menu_item_data, item))
+        
+        # Insert all menu items at once
+        menu_items_to_insert = [record[1] for record in menu_item_records]
+        await async_supabase_client.table_insert("menu_items", menu_items_to_insert)
+        
+        # Prepare all image search tasks
+        image_search_tasks = []
+        for menu_item_id, menu_item_data, item in menu_item_records:
             search_query = f"{item['name']} dish food"
             if item.get("description"):
                 search_query += f" {item['description'][:50]}"  # Add partial description
             
-            # Get images for the item
-            image_urls = await search_images_for_item(search_query, limit=2)
+            # Create coroutine for image search
+            task = search_images_for_item(search_query, limit=2)
+            image_search_tasks.append((menu_item_id, item, task))
+        
+        # Execute all image searches in parallel
+        logger.info(f"Starting parallel image search for {len(image_search_tasks)} items")
+        search_start = datetime.utcnow()
+        image_results = await asyncio.gather(
+            *[task for _, _, task in image_search_tasks],
+            return_exceptions=True  # Don't fail if one search fails
+        )
+        search_time = (datetime.utcnow() - search_start).total_seconds()
+        logger.info(f"Parallel image search completed in {search_time:.2f}s")
+        
+        # Process results and prepare image records
+        all_image_records = []
+        for i, (menu_item_id, item, _) in enumerate(image_search_tasks):
+            image_urls = []
             
-            # Store image URLs
-            if image_urls:
-                image_records = []
-                for i, image_url in enumerate(image_urls):
-                    image_records.append({
+            # Handle results or exceptions
+            if isinstance(image_results[i], Exception):
+                logger.warning(f"Image search failed for item '{item['name']}': {str(image_results[i])}")
+            elif image_results[i]:
+                image_urls = image_results[i]
+                
+                # Prepare image records for batch insert
+                for j, image_url in enumerate(image_urls):
+                    all_image_records.append({
                         "menu_item_id": menu_item_id,
                         "image_url": image_url,
                         "source": "google_cse",
-                        "is_primary": i == 0
+                        "is_primary": j == 0
                     })
-                
-                if image_records:
-                    supabase_client.table("item_images").insert(image_records).execute()
             
             # Add to response
             menu_items.append({
@@ -132,15 +170,20 @@ async def upload_menu(
                 "images": image_urls
             })
         
+        # Batch insert all image records
+        if all_image_records:
+            await async_supabase_client.table_insert("item_images", all_image_records)
+        
         # Update menu status to completed
-        supabase_client.table("menus").update({
+        await async_supabase_client.table_update("menus", {
             "status": "completed"
-        }).eq("id", menu_id).execute()
+        }, eq={"id": menu_id})
         
         # Deduct credits
         await deduct_user_credits(current_user["id"], credits=1)
         
-        logger.info(f"Successfully processed menu {menu_id} with {len(menu_items)} items")
+        total_time = (datetime.utcnow() - start_time).total_seconds()
+        logger.info(f"Successfully processed menu {menu_id} with {len(menu_items)} items in {total_time:.2f}s")
         
         # Get restaurant name from the extraction if available
         restaurant_name = extracted_items[0].get("restaurant_name", "Uploaded Menu") if extracted_items else "Uploaded Menu"
@@ -157,19 +200,28 @@ async def upload_menu(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error processing menu {menu_id}: {str(e)}")
+        total_time = (datetime.utcnow() - start_time).total_seconds()
+        logger.error(f"Error processing menu {menu_id} after {total_time:.2f}s: {str(e)}", exc_info=True)
         
         # Update menu status to failed
         try:
-            supabase_client.table("menus").update({
+            await async_supabase_client.table_update("menus", {
                 "status": "failed"
-            }).eq("id", menu_id).execute()
-        except:
-            pass
+            }, eq={"id": menu_id})
+        except Exception as update_error:
+            logger.error(f"Failed to update menu status to 'failed' for menu {menu_id}: {str(update_error)}")
+        
+        # Provide more specific error messages based on the error type
+        if "timeout" in str(e).lower():
+            detail = "Request timed out. Please try uploading a smaller image or try again later."
+        elif "connection" in str(e).lower():
+            detail = "Connection error. Please check your internet connection and try again."
+        else:
+            detail = "Failed to process menu. Please try again."
         
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to process menu. Please try again."
+            detail=detail
         )
 
 @router.get("/{menu_id}")
@@ -180,9 +232,12 @@ async def get_menu(
     """Get a specific menu with all its items"""
     try:
         # Get menu with items and images
-        menu_response = supabase_client.table("menus").select(
-            "*, menu_items(*, item_images(*))"
-        ).eq("id", menu_id).eq("user_id", current_user["id"]).single().execute()
+        menu_response = await async_supabase_client.table_select(
+            "menus",
+            "*, menu_items(*, item_images(*))",
+            eq={"id": menu_id, "user_id": current_user["id"]},
+            single=True
+        )
         
         if not menu_response.data:
             raise HTTPException(
@@ -226,9 +281,12 @@ async def get_user_menus(
 ):
     """Get all menus for the current user"""
     try:
-        menus_response = supabase_client.table("menus").select(
-            "*, menu_items(count)"
-        ).eq("user_id", current_user["id"]).order("processed_at", desc=True).execute()
+        menus_response = await async_supabase_client.table_select(
+            "menus",
+            "*, menu_items(count)",
+            eq={"user_id": current_user["id"]},
+            order={"processed_at": True}
+        )
         
         menus = []
         for menu in menus_response.data:
