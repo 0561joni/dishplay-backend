@@ -78,6 +78,26 @@ app = FastAPI(
     lifespan=lifespan
 )
 
+# Add request size limiting middleware
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.responses import JSONResponse
+
+class RequestSizeLimitMiddleware(BaseHTTPMiddleware):
+    def __init__(self, app, max_size: int = 15 * 1024 * 1024):  # 15MB default
+        super().__init__(app)
+        self.max_size = max_size
+
+    async def dispatch(self, request, call_next):
+        content_length = request.headers.get("content-length")
+        if content_length and int(content_length) > self.max_size:
+            return JSONResponse(
+                status_code=413,
+                content={"detail": "Request entity too large"}
+            )
+        return await call_next(request)
+
+app.add_middleware(RequestSizeLimitMiddleware)
+
 # Configure CORS - you can adjust these settings based on your frontend domain
 app.add_middleware(
     CORSMiddleware,

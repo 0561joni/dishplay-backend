@@ -26,6 +26,9 @@ async def upload_menu(
 ):
     """Upload and process a menu image"""
     
+    start_time = datetime.utcnow()
+    logger.info(f"Starting menu upload for user {current_user['id']}")
+    
     # Validate file type
     if not menu.content_type or not menu.content_type.startswith("image/"):
         raise HTTPException(
@@ -72,11 +75,17 @@ async def upload_menu(
     try:
         # Process and optimize image
         logger.info(f"Processing image for menu {menu_id}")
+        process_start = datetime.utcnow()
         base64_image = await process_and_optimize_image(contents)
+        process_time = (datetime.utcnow() - process_start).total_seconds()
+        logger.info(f"Image processing completed in {process_time:.2f}s")
         
         # Extract menu items using OpenAI
         logger.info(f"Extracting menu items for menu {menu_id}")
+        extraction_start = datetime.utcnow()
         extracted_items = await extract_menu_items(base64_image)
+        extraction_time = (datetime.utcnow() - extraction_start).total_seconds()
+        logger.info(f"Menu extraction completed in {extraction_time:.2f}s, found {len(extracted_items) if extracted_items else 0} items")
         
         if not extracted_items:
             # Update menu status to failed
@@ -124,10 +133,13 @@ async def upload_menu(
         
         # Execute all image searches in parallel
         logger.info(f"Starting parallel image search for {len(image_search_tasks)} items")
+        search_start = datetime.utcnow()
         image_results = await asyncio.gather(
             *[task for _, _, task in image_search_tasks],
             return_exceptions=True  # Don't fail if one search fails
         )
+        search_time = (datetime.utcnow() - search_start).total_seconds()
+        logger.info(f"Parallel image search completed in {search_time:.2f}s")
         
         # Process results and prepare image records
         all_image_records = []
@@ -170,7 +182,8 @@ async def upload_menu(
         # Deduct credits
         await deduct_user_credits(current_user["id"], credits=1)
         
-        logger.info(f"Successfully processed menu {menu_id} with {len(menu_items)} items")
+        total_time = (datetime.utcnow() - start_time).total_seconds()
+        logger.info(f"Successfully processed menu {menu_id} with {len(menu_items)} items in {total_time:.2f}s")
         
         # Get restaurant name from the extraction if available
         restaurant_name = extracted_items[0].get("restaurant_name", "Uploaded Menu") if extracted_items else "Uploaded Menu"
@@ -187,7 +200,8 @@ async def upload_menu(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error processing menu {menu_id}: {str(e)}")
+        total_time = (datetime.utcnow() - start_time).total_seconds()
+        logger.error(f"Error processing menu {menu_id} after {total_time:.2f}s: {str(e)}", exc_info=True)
         
         # Update menu status to failed
         try:
@@ -197,9 +211,17 @@ async def upload_menu(
         except Exception as update_error:
             logger.error(f"Failed to update menu status to 'failed' for menu {menu_id}: {str(update_error)}")
         
+        # Provide more specific error messages based on the error type
+        if "timeout" in str(e).lower():
+            detail = "Request timed out. Please try uploading a smaller image or try again later."
+        elif "connection" in str(e).lower():
+            detail = "Connection error. Please check your internet connection and try again."
+        else:
+            detail = "Failed to process menu. Please try again."
+        
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to process menu. Please try again."
+            detail=detail
         )
 
 @router.get("/{menu_id}")

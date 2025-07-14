@@ -26,7 +26,12 @@ def get_http_client() -> httpx.AsyncClient:
         # Create async client with connection pooling
         _http_client = httpx.AsyncClient(
             limits=limits,
-            timeout=httpx.Timeout(30.0),  # 30 second timeout
+            timeout=httpx.Timeout(
+                connect=10.0,   # 10 seconds to establish connection
+                read=60.0,      # 60 seconds to read response
+                write=10.0,     # 10 seconds to write request
+                pool=5.0        # 5 seconds to get connection from pool
+            ),
             http2=True  # Enable HTTP/2 for better performance
         )
         logger.info("Initialized HTTP client with connection pooling")
