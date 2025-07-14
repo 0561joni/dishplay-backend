@@ -1,5 +1,7 @@
 from fastapi import FastAPI, HTTPException, Depends, UploadFile, File, status
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.responses import JSONResponse
 from contextlib import asynccontextmanager
 import logging
 from typing import Optional
@@ -17,6 +19,21 @@ from app.routers import auth, menu, user
 from app.core.logging import setup_logging
 from app.core.supabase_client import get_supabase_client, close_connections
 from app.core.cache import cache_cleanup_task
+
+# Request size limiting middleware
+class RequestSizeLimitMiddleware(BaseHTTPMiddleware):
+    def __init__(self, app, max_size: int = 15 * 1024 * 1024):  # 15MB default
+        super().__init__(app)
+        self.max_size = max_size
+
+    async def dispatch(self, request, call_next):
+        content_length = request.headers.get("content-length")
+        if content_length and int(content_length) > self.max_size:
+            return JSONResponse(
+                status_code=413,
+                content={"detail": "Request entity too large"}
+            )
+        return await call_next(request)
 
 # Setup logging
 setup_logging()
@@ -77,24 +94,6 @@ app = FastAPI(
     version="1.0.0",
     lifespan=lifespan
 )
-
-# Add request size limiting middleware
-from starlette.middleware.base import BaseHTTPMiddleware
-from starlette.responses import JSONResponse
-
-class RequestSizeLimitMiddleware(BaseHTTPMiddleware):
-    def __init__(self, app, max_size: int = 15 * 1024 * 1024):  # 15MB default
-        super().__init__(app)
-        self.max_size = max_size
-
-    async def dispatch(self, request, call_next):
-        content_length = request.headers.get("content-length")
-        if content_length and int(content_length) > self.max_size:
-            return JSONResponse(
-                status_code=413,
-                content={"detail": "Request entity too large"}
-            )
-        return await call_next(request)
 
 app.add_middleware(RequestSizeLimitMiddleware)
 

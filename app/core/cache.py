@@ -1,5 +1,5 @@
 # app/core/cache.py
-from typing import Any, Optional, Dict
+from typing import Any, Optional, Dict, Tuple
 import time
 import logging
 from functools import wraps
@@ -11,7 +11,7 @@ class InMemoryCache:
     """Simple in-memory cache with TTL support"""
     
     def __init__(self):
-        self._cache: Dict[str, tuple[Any, float]] = {}
+        self._cache: Dict[str, Tuple[Any, float]] = {}
         self._lock = asyncio.Lock()
     
     async def get(self, key: str) -> Optional[Any]:
