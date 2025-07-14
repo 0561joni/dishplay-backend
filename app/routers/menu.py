@@ -7,7 +7,7 @@ from datetime import datetime
 import uuid
 
 from app.core.auth import get_current_user, verify_user_credits, deduct_user_credits
-from app.services.image_processor import process_and_optimize_image, validate_image_file
+from app.services.image_processor import process_and_optimize_image
 from app.services.openai_service import extract_menu_items
 from app.services.google_search_service import search_images_for_item
 from app.core.async_supabase import async_supabase_client
@@ -26,9 +26,6 @@ async def upload_menu(
 ):
     """Upload and process a menu image"""
     
-    start_time = datetime.utcnow()
-    logger.info(f"Starting menu upload for user {current_user['id']}")
-    
     # Validate file type
     if not menu.content_type or not menu.content_type.startswith("image/"):
         raise HTTPException(
@@ -42,13 +39,6 @@ async def upload_menu(
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="File too large. Maximum size is 10MB."
-        )
-    
-    # Validate image file format
-    if not validate_image_file(contents):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Invalid image file. Please upload a valid image format (JPEG, PNG, GIF, etc.)."
         )
     
     # Verify user has credits
@@ -75,17 +65,11 @@ async def upload_menu(
     try:
         # Process and optimize image
         logger.info(f"Processing image for menu {menu_id}")
-        process_start = datetime.utcnow()
         base64_image = await process_and_optimize_image(contents)
-        process_time = (datetime.utcnow() - process_start).total_seconds()
-        logger.info(f"Image processing completed in {process_time:.2f}s")
         
         # Extract menu items using OpenAI
         logger.info(f"Extracting menu items for menu {menu_id}")
-        extraction_start = datetime.utcnow()
         extracted_items = await extract_menu_items(base64_image)
-        extraction_time = (datetime.utcnow() - extraction_start).total_seconds()
-        logger.info(f"Menu extraction completed in {extraction_time:.2f}s, found {len(extracted_items) if extracted_items else 0} items")
         
         if not extracted_items:
             # Update menu status to failed
@@ -100,11 +84,10 @@ async def upload_menu(
         
         # Process each menu item
         menu_items = []
-        menu_item_records = []
-        
-        # First, create all menu item records
         for index, item in enumerate(extracted_items):
+            # Create menu item record
             menu_item_id = str(uuid.uuid4())
+            
             menu_item_data = {
                 "id": menu_item_id,
                 "menu_id": menu_id,
@@ -114,52 +97,31 @@ async def upload_menu(
                 "currency": "USD",  # Default to USD
                 "order_index": index
             }
-            menu_item_records.append((menu_item_id, menu_item_data, item))
-        
-        # Insert all menu items at once
-        menu_items_to_insert = [record[1] for record in menu_item_records]
-        await async_supabase_client.table_insert("menu_items", menu_items_to_insert)
-        
-        # Prepare all image search tasks
-        image_search_tasks = []
-        for menu_item_id, menu_item_data, item in menu_item_records:
+            
+            # Insert menu item
+            item_response = await async_supabase_client.table_insert("menu_items", menu_item_data)
+            
+            # Search for images concurrently
             search_query = f"{item['name']} dish food"
             if item.get("description"):
                 search_query += f" {item['description'][:50]}"  # Add partial description
             
-            # Create coroutine for image search
-            task = search_images_for_item(search_query, limit=2)
-            image_search_tasks.append((menu_item_id, item, task))
-        
-        # Execute all image searches in parallel
-        logger.info(f"Starting parallel image search for {len(image_search_tasks)} items")
-        search_start = datetime.utcnow()
-        image_results = await asyncio.gather(
-            *[task for _, _, task in image_search_tasks],
-            return_exceptions=True  # Don't fail if one search fails
-        )
-        search_time = (datetime.utcnow() - search_start).total_seconds()
-        logger.info(f"Parallel image search completed in {search_time:.2f}s")
-        
-        # Process results and prepare image records
-        all_image_records = []
-        for i, (menu_item_id, item, _) in enumerate(image_search_tasks):
-            image_urls = []
+            # Get images for the item
+            image_urls = await search_images_for_item(search_query, limit=2)
             
-            # Handle results or exceptions
-            if isinstance(image_results[i], Exception):
-                logger.warning(f"Image search failed for item '{item['name']}': {str(image_results[i])}")
-            elif image_results[i]:
-                image_urls = image_results[i]
-                
-                # Prepare image records for batch insert
-                for j, image_url in enumerate(image_urls):
-                    all_image_records.append({
+            # Store image URLs
+            if image_urls:
+                image_records = []
+                for i, image_url in enumerate(image_urls):
+                    image_records.append({
                         "menu_item_id": menu_item_id,
                         "image_url": image_url,
                         "source": "google_cse",
-                        "is_primary": j == 0
+                        "is_primary": i == 0
                     })
+                
+                if image_records:
+                    await async_supabase_client.table_insert("item_images", image_records)
             
             # Add to response
             menu_items.append({
@@ -170,10 +132,6 @@ async def upload_menu(
                 "images": image_urls
             })
         
-        # Batch insert all image records
-        if all_image_records:
-            await async_supabase_client.table_insert("item_images", all_image_records)
-        
         # Update menu status to completed
         await async_supabase_client.table_update("menus", {
             "status": "completed"
@@ -182,8 +140,7 @@ async def upload_menu(
         # Deduct credits
         await deduct_user_credits(current_user["id"], credits=1)
         
-        total_time = (datetime.utcnow() - start_time).total_seconds()
-        logger.info(f"Successfully processed menu {menu_id} with {len(menu_items)} items in {total_time:.2f}s")
+        logger.info(f"Successfully processed menu {menu_id} with {len(menu_items)} items")
         
         # Get restaurant name from the extraction if available
         restaurant_name = extracted_items[0].get("restaurant_name", "Uploaded Menu") if extracted_items else "Uploaded Menu"
@@ -200,28 +157,19 @@ async def upload_menu(
     except HTTPException:
         raise
     except Exception as e:
-        total_time = (datetime.utcnow() - start_time).total_seconds()
-        logger.error(f"Error processing menu {menu_id} after {total_time:.2f}s: {str(e)}", exc_info=True)
+        logger.error(f"Error processing menu {menu_id}: {str(e)}")
         
         # Update menu status to failed
         try:
             await async_supabase_client.table_update("menus", {
                 "status": "failed"
             }, eq={"id": menu_id})
-        except Exception as update_error:
-            logger.error(f"Failed to update menu status to 'failed' for menu {menu_id}: {str(update_error)}")
-        
-        # Provide more specific error messages based on the error type
-        if "timeout" in str(e).lower():
-            detail = "Request timed out. Please try uploading a smaller image or try again later."
-        elif "connection" in str(e).lower():
-            detail = "Connection error. Please check your internet connection and try again."
-        else:
-            detail = "Failed to process menu. Please try again."
+        except:
+            pass
         
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=detail
+            detail="Failed to process menu. Please try again."
         )
 
 @router.get("/{menu_id}")
