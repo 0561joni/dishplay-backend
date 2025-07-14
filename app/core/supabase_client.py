@@ -1,5 +1,6 @@
 # app/core/supabase_client.py
 from supabase import create_client, Client
+from supabase.lib.client_options import ClientOptions
 import os
 import logging
 from typing import Optional
@@ -52,9 +53,17 @@ def get_supabase_client() -> Client:
             raise ValueError("Supabase credentials not configured")
         
         try:
-            # Create client without options parameter to avoid compatibility issues
-            # The newer Supabase client has different options handling
-            _supabase_client = create_client(supabase_url, supabase_key)
+            # Create client with proper ClientOptions for server-side usage
+            options = ClientOptions(
+                auto_refresh_token=False,  # Disable auto token refresh for server-side
+                persist_session=False     # Disable session persistence for server-side usage
+            )
+            
+            _supabase_client = create_client(
+                supabase_url, 
+                supabase_key,
+                options=options
+            )
             logger.info("Successfully initialized Supabase client with optimized settings")
         except Exception as e:
             logger.error(f"Failed to initialize Supabase client: {e}")
