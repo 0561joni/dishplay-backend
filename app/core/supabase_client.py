@@ -52,17 +52,9 @@ def get_supabase_client() -> Client:
             raise ValueError("Supabase credentials not configured")
         
         try:
-            # Create client with custom httpx client for connection pooling
-            # Note: The supabase-py library uses httpx internally
-            _supabase_client = create_client(
-                supabase_url, 
-                supabase_key,
-                options={
-                    "persist_session": False,  # Disable session persistence for server-side usage
-                    "auto_refresh_token": False,  # Disable auto token refresh for server-side
-                    "flow_type": "implicit"  # Use implicit flow for server-side
-                }
-            )
+            # Create client without options parameter to avoid compatibility issues
+            # The newer Supabase client has different options handling
+            _supabase_client = create_client(supabase_url, supabase_key)
             logger.info("Successfully initialized Supabase client with optimized settings")
         except Exception as e:
             logger.error(f"Failed to initialize Supabase client: {e}")

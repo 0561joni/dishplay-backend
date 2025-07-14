@@ -7,6 +7,7 @@ import logging
 from typing import Optional
 import os
 import sys
+import asyncio
 from dotenv import load_dotenv
 
 # Load environment variables
