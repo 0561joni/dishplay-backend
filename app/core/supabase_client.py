@@ -1,6 +1,5 @@
 # app/core/supabase_client.py
 from supabase import create_client, Client
-from supabase.lib.client_options import ClientOptions
 import os
 import logging
 from typing import Optional
