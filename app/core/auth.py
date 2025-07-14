@@ -7,7 +7,7 @@ import os
 from datetime import datetime
 import requests
 
-from .async_supabase import async_supabase_client
+from .supabase_client import supabase_client
 
 logger = logging.getLogger(__name__)
 
@@ -72,7 +72,7 @@ async def get_current_user(credentials: HTTPAuthorizationCredentials = Security(
         # Get additional user data from the users table
         try:
             # Don't chain .single().execute() - execute first, then get single result
-            user_response = await async_supabase_client.table_select("users", "*", eq={"id": user_id})
+            user_response = supabase_client.table("users").select("*").eq("id", user_id).execute()
             
             if user_response.data and len(user_response.data) > 0:
                 user = user_response.data[0]
@@ -93,12 +93,12 @@ async def get_current_user(credentials: HTTPAuthorizationCredentials = Security(
             }
             
             try:
-                await async_supabase_client.table_insert("users", user_data)
+                supabase_client.table("users").insert(user_data).execute()
                 user = user_data
             except Exception as insert_error:
                 logger.error(f"Failed to create user record: {str(insert_error)}")
                 # If insert fails (maybe user exists), try to fetch again
-                user_response = await async_supabase_client.table_select("users", "*", eq={"id": user_id}, single=True)
+                user_response = supabase_client.table("users").select("*").eq("id", user_id).single().execute()
                 if user_response.data:
                     user = user_response.data
                 else:
@@ -127,7 +127,7 @@ async def deduct_user_credits(user_id: str, credits: int = 1) -> Dict:
     """Deduct credits from user account"""
     try:
         # Get current credits
-        response = await async_supabase_client.table_select("users", "credits", eq={"id": user_id})
+        response = supabase_client.table("users").select("credits").eq("id", user_id).execute()
         
         if not response.data or len(response.data) == 0:
             raise HTTPException(
@@ -145,10 +145,10 @@ async def deduct_user_credits(user_id: str, credits: int = 1) -> Dict:
         
         # Update credits
         new_credits = current_credits - credits
-        update_response = await async_supabase_client.table_update("users", {
+        update_response = supabase_client.table("users").update({
             "credits": new_credits,
             "updated_at": datetime.utcnow().isoformat()
-        }, eq={"id": user_id})
+        }).eq("id", user_id).execute()
         
         return {"credits": new_credits}
         
