@@ -27,14 +27,19 @@ def verify_token_with_supabase(token: str) -> Dict:
     supabase_url = os.getenv("SUPABASE_URL")
     anon_key = os.getenv("SUPABASE_ANON_KEY")
     
+    logger.info(f"Verifying token with Supabase URL: {supabase_url}")
+    
     if not supabase_url or not anon_key:
-        logger.error("Missing Supabase configuration")
+        logger.error(f"Missing Supabase configuration - URL: {supabase_url}, Key exists: {bool(anon_key)}")
         raise AuthError("Server configuration error")
     
     try:
         # Make a synchronous request to Supabase
+        auth_url = f"{supabase_url}/auth/v1/user"
+        logger.info(f"Making request to: {auth_url}")
+        
         response = requests.get(
-            f"{supabase_url}/auth/v1/user",
+            auth_url,
             headers={
                 "Authorization": f"Bearer {token}",
                 "apikey": anon_key
@@ -45,13 +50,15 @@ def verify_token_with_supabase(token: str) -> Dict:
         logger.info(f"Supabase auth response status: {response.status_code}")
         
         if response.status_code != 200:
-            logger.error(f"Supabase auth failed: {response.text}")
+            logger.error(f"Supabase auth failed with status {response.status_code}: {response.text}")
+            logger.error(f"Response headers: {dict(response.headers)}")
             raise AuthError("Invalid authentication token")
         
         return response.json()
         
     except requests.RequestException as e:
         logger.error(f"Request to Supabase failed: {str(e)}")
+        logger.error(f"Request URL was: {supabase_url}/auth/v1/user")
         raise AuthError("Failed to verify token")
 
 async def get_current_user(credentials: HTTPAuthorizationCredentials = Security(security)) -> Dict:
