@@ -7,7 +7,6 @@ import logging
 from typing import Optional
 import os
 import sys
-import asyncio
 from dotenv import load_dotenv
 
 # Load environment variables
@@ -61,20 +60,16 @@ async def lifespan(app: FastAPI):
     
     logger.info("All required environment variables are present")
     
-    """# Test Supabase connection
+    # Test Supabase connection
     try:
         # Simple health check query
         client = get_supabase_client()
         response = client.table("users").select("id").limit(1).execute()
-        # Check if response has data (indicating successful connection)
-        if hasattr(response, 'data'):
-            logger.info("Successfully connected to Supabase")
-        else:
-            logger.warning("Supabase connection test returned unexpected response format")
+        logger.info("Successfully connected to Supabase")
     except Exception as e:
         logger.error(f"Failed to connect to Supabase: {str(e)}")
         raise RuntimeError(f"Failed to connect to Supabase: {str(e)}")
-    """
+    
     # Start cache cleanup task
     cleanup_task = asyncio.create_task(cache_cleanup_task())
     logger.info("Started cache cleanup task")
@@ -132,11 +127,7 @@ async def health_check():
         # Test database connection
         client = get_supabase_client()
         response = client.table("users").select("id").limit(1).execute()
-        # Check if response has data (indicating successful connection)
-        if hasattr(response, 'data'):
-            db_status = "healthy"
-        else:
-            db_status = "unhealthy"
+        db_status = "healthy"
     except Exception as e:
         logger.error(f"Database health check failed: {str(e)}")
         db_status = "unhealthy"

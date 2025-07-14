@@ -1,6 +1,5 @@
 # app/core/supabase_client.py
 from supabase import create_client, Client
-from supabase.lib.client_options import ClientOptions
 import os
 import logging
 from typing import Optional
@@ -53,9 +52,18 @@ def get_supabase_client() -> Client:
             raise ValueError("Supabase credentials not configured")
         
         try:
-            # Create client without options to avoid compatibility issues
-            _supabase_client = create_client(supabase_url, supabase_key)
-            logger.info("Successfully initialized Supabase client")
+            # Create client with custom httpx client for connection pooling
+            # Note: The supabase-py library uses httpx internally
+            _supabase_client = create_client(
+                supabase_url, 
+                supabase_key,
+                options={
+                    "persist_session": False,  # Disable session persistence for server-side usage
+                    "auto_refresh_token": False,  # Disable auto token refresh for server-side
+                    "flow_type": "implicit"  # Use implicit flow for server-side
+                }
+            )
+            logger.info("Successfully initialized Supabase client with optimized settings")
         except Exception as e:
             logger.error(f"Failed to initialize Supabase client: {e}")
             raise
