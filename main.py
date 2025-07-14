@@ -66,7 +66,11 @@ async def lifespan(app: FastAPI):
         # Simple health check query
         client = get_supabase_client()
         response = client.table("users").select("id").limit(1).execute()
-        logger.info("Successfully connected to Supabase")
+        # Check if response has data (indicating successful connection)
+        if hasattr(response, 'data'):
+            logger.info("Successfully connected to Supabase")
+        else:
+            logger.warning("Supabase connection test returned unexpected response format")
     except Exception as e:
         logger.error(f"Failed to connect to Supabase: {str(e)}")
         raise RuntimeError(f"Failed to connect to Supabase: {str(e)}")
@@ -128,7 +132,11 @@ async def health_check():
         # Test database connection
         client = get_supabase_client()
         response = client.table("users").select("id").limit(1).execute()
-        db_status = "healthy"
+        # Check if response has data (indicating successful connection)
+        if hasattr(response, 'data'):
+            db_status = "healthy"
+        else:
+            db_status = "unhealthy"
     except Exception as e:
         logger.error(f"Database health check failed: {str(e)}")
         db_status = "unhealthy"
