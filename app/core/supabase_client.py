@@ -53,18 +53,9 @@ def get_supabase_client() -> Client:
             raise ValueError("Supabase credentials not configured")
         
         try:
-            # Create client with proper ClientOptions for server-side usage
-            options = ClientOptions(
-                auto_refresh_token=False,  # Disable auto token refresh for server-side
-                persist_session=False     # Disable session persistence for server-side usage
-            )
-            
-            _supabase_client = create_client(
-                supabase_url, 
-                supabase_key,
-                options=options
-            )
-            logger.info("Successfully initialized Supabase client with optimized settings")
+            # Create client with minimal configuration to avoid conflicts
+            _supabase_client = create_client(supabase_url, supabase_key)
+            logger.info("Successfully initialized Supabase client")
         except Exception as e:
             logger.error(f"Failed to initialize Supabase client: {e}")
             raise
