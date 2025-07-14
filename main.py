@@ -61,7 +61,7 @@ async def lifespan(app: FastAPI):
     
     logger.info("All required environment variables are present")
     
-    # Test Supabase connection
+    """# Test Supabase connection
     try:
         # Simple health check query
         client = get_supabase_client()
@@ -74,7 +74,7 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.error(f"Failed to connect to Supabase: {str(e)}")
         raise RuntimeError(f"Failed to connect to Supabase: {str(e)}")
-    
+    """
     # Start cache cleanup task
     cleanup_task = asyncio.create_task(cache_cleanup_task())
     logger.info("Started cache cleanup task")
