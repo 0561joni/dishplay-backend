@@ -15,7 +15,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from app.routers import auth, menu, user
 from app.core.logging import setup_logging
-from app.core.supabase_client import get_supabase_client
+from app.core.supabase_client import get_supabase_client, close_connections
+from app.core.cache import cache_cleanup_task
 
 # Setup logging
 setup_logging()
@@ -52,9 +53,22 @@ async def lifespan(app: FastAPI):
         logger.error(f"Failed to connect to Supabase: {str(e)}")
         raise RuntimeError(f"Failed to connect to Supabase: {str(e)}")
     
+    # Start cache cleanup task
+    cleanup_task = asyncio.create_task(cache_cleanup_task())
+    logger.info("Started cache cleanup task")
+    
     yield
     
+    # Cancel cleanup task
+    cleanup_task.cancel()
+    try:
+        await cleanup_task
+    except asyncio.CancelledError:
+        pass
+    
     logger.info("Shutting down DishPlay API server...")
+    # Close connection pool
+    await close_connections()
 
 # Create FastAPI app with lifespan
 app = FastAPI(
