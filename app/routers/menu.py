@@ -5,6 +5,7 @@ import logging
 import asyncio
 from datetime import datetime
 import uuid
+import os
 
 from app.core.auth import get_current_user, verify_user_credits, deduct_user_credits
 from app.services.image_processor import process_and_optimize_image, validate_image_file
@@ -18,6 +19,45 @@ logger = logging.getLogger(__name__)
 
 # Maximum file size: 10MB
 MAX_FILE_SIZE = 10 * 1024 * 1024
+
+# Test mode flag - set via environment variable
+TEST_MODE = os.getenv("TEST_MODE", "false").lower() == "true"
+
+def get_mock_menu_items():
+    """Return mock menu items for testing"""
+    return [
+        {
+            "name": "Margherita Pizza",
+            "description": "Fresh tomatoes, mozzarella, basil",
+            "price": 12.99,
+            "currency": "USD"
+        },
+        {
+            "name": "Caesar Salad", 
+            "description": "Romaine lettuce, parmesan, croutons",
+            "price": 8.50,
+            "currency": "USD"
+        },
+        {
+            "name": "Grilled Salmon",
+            "description": "Atlantic salmon with lemon herbs", 
+            "price": 18.75,
+            "currency": "USD"
+        },
+        {
+            "name": "Chocolate Cake",
+            "description": "Rich chocolate cake with vanilla ice cream",
+            "price": 6.25,
+            "currency": "USD"
+        }
+    ]
+
+def get_mock_images():
+    """Return mock image URLs for testing"""
+    return [
+        "https://images.unsplash.com/photo-1565299624946-b28f40a0ca4b?w=400",
+        "https://images.unsplash.com/photo-1512621776951-a57141f2eefd?w=400"
+    ]
 
 @router.post("/upload", response_model=MenuResponse)
 async def upload_menu(
@@ -73,19 +113,24 @@ async def upload_menu(
         )
     
     try:
-        # Process and optimize image
-        logger.info(f"Processing image for menu {menu_id}")
-        process_start = datetime.utcnow()
-        base64_image = await process_and_optimize_image(contents)
-        process_time = (datetime.utcnow() - process_start).total_seconds()
-        logger.info(f"Image processing completed in {process_time:.2f}s")
-        
-        # Extract menu items using OpenAI
-        logger.info(f"Extracting menu items for menu {menu_id}")
-        extraction_start = datetime.utcnow()
-        extracted_items = await extract_menu_items(base64_image)
-        extraction_time = (datetime.utcnow() - extraction_start).total_seconds()
-        logger.info(f"Menu extraction completed in {extraction_time:.2f}s, found {len(extracted_items) if extracted_items else 0} items")
+        if TEST_MODE:
+            # Test mode: use mock data
+            logger.info(f"TEST MODE: Using mock data for menu {menu_id}")
+            extracted_items = get_mock_menu_items()
+        else:
+            # Normal mode: process image and extract items
+            logger.info(f"Processing image for menu {menu_id}")
+            process_start = datetime.utcnow()
+            base64_image = await process_and_optimize_image(contents)
+            process_time = (datetime.utcnow() - process_start).total_seconds()
+            logger.info(f"Image processing completed in {process_time:.2f}s")
+            
+            # Extract menu items using OpenAI
+            logger.info(f"Extracting menu items for menu {menu_id}")
+            extraction_start = datetime.utcnow()
+            extracted_items = await extract_menu_items(base64_image)
+            extraction_time = (datetime.utcnow() - extraction_start).total_seconds()
+            logger.info(f"Menu extraction completed in {extraction_time:.2f}s, found {len(extracted_items) if extracted_items else 0} items")
         
         if not extracted_items:
             # Update menu status to failed
@@ -120,30 +165,45 @@ async def upload_menu(
         menu_items_to_insert = [record[1] for record in menu_item_records]
         await async_supabase_client.table_insert("menu_items", menu_items_to_insert)
         
-        # Prepare all image search tasks
-        image_search_tasks = []
-        for menu_item_id, menu_item_data, item in menu_item_records:
-            search_query = f"{item['name']} dish food"
-            if item.get("description"):
-                search_query += f" {item['description'][:50]}"  # Add partial description
+        if TEST_MODE:
+            # Test mode: use mock images
+            logger.info(f"TEST MODE: Using mock images for {len(menu_item_records)} items")
+            mock_images = get_mock_images()
+            image_results = [mock_images for _ in menu_item_records]
+        else:
+            # Normal mode: search for images
+            # Prepare all image search tasks
+            image_search_tasks = []
+            for menu_item_id, menu_item_data, item in menu_item_records:
+                search_query = f"{item['name']} dish food"
+                if item.get("description"):
+                    search_query += f" {item['description'][:50]}"  # Add partial description
+                
+                # Create coroutine for image search
+                task = search_images_for_item(search_query, limit=2)
+                image_search_tasks.append((menu_item_id, item, task))
             
-            # Create coroutine for image search
-            task = search_images_for_item(search_query, limit=2)
-            image_search_tasks.append((menu_item_id, item, task))
-        
-        # Execute all image searches in parallel
-        logger.info(f"Starting parallel image search for {len(image_search_tasks)} items")
-        search_start = datetime.utcnow()
-        image_results = await asyncio.gather(
-            *[task for _, _, task in image_search_tasks],
-            return_exceptions=True  # Don't fail if one search fails
-        )
-        search_time = (datetime.utcnow() - search_start).total_seconds()
-        logger.info(f"Parallel image search completed in {search_time:.2f}s")
+            # Execute all image searches in parallel
+            logger.info(f"Starting parallel image search for {len(image_search_tasks)} items")
+            search_start = datetime.utcnow()
+            image_results = await asyncio.gather(
+                *[task for _, _, task in image_search_tasks],
+                return_exceptions=True  # Don't fail if one search fails
+            )
+            search_time = (datetime.utcnow() - search_start).total_seconds()
+            logger.info(f"Parallel image search completed in {search_time:.2f}s")
         
         # Process results and prepare image records
         all_image_records = []
-        for i, (menu_item_id, item, _) in enumerate(image_search_tasks):
+        
+        if TEST_MODE:
+            # For test mode, iterate over menu_item_records
+            items_to_process = [(record[0], record[2]) for record in menu_item_records]
+        else:
+            # For normal mode, use image_search_tasks
+            items_to_process = [(task[0], task[1]) for task in image_search_tasks]
+        
+        for i, (menu_item_id, item) in enumerate(items_to_process):
             image_urls = []
             
             # Handle results or exceptions
