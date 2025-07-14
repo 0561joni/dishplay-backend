@@ -111,7 +111,7 @@ async def upload_menu(
                 "item_name": item["name"],
                 "description": item.get("description"),
                 "price": item.get("price"),
-                "currency": "USD",  # Default to USD
+                "currency": item.get("currency", "USD"),  # Use detected currency or default to USD
                 "order_index": index
             }
             menu_item_records.append((menu_item_id, menu_item_data, item))
