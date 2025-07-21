@@ -5,10 +5,10 @@ from typing import Optional, Dict
 import logging
 import os
 from datetime import datetime
-import requests  # Using requests directly without session for token verification
 
 from .async_supabase import async_supabase_client
 from .cache import user_cache
+from .supabase_client import get_supabase_client
 
 logger = logging.getLogger(__name__)
 
@@ -23,47 +23,36 @@ class AuthError(HTTPException):
         )
 
 def verify_token_with_supabase(token: str) -> Dict:
-    """Verify token directly with Supabase API using requests"""
-    supabase_url = os.getenv("SUPABASE_URL")
-    anon_key = os.getenv("SUPABASE_ANON_KEY")
-    
-    logger.info(f"Verifying token with Supabase URL: {supabase_url}")
-    
-    if not supabase_url or not anon_key:
-        logger.error(f"Missing Supabase configuration - URL: {supabase_url}, Key exists: {bool(anon_key)}")
-        raise AuthError("Server configuration error")
-    
+    """Verify token using Supabase SDK's built-in method"""
     try:
-        # Make a synchronous request to Supabase
-        # Using a fresh request without session to ensure complete isolation
-        auth_url = f"{supabase_url}/auth/v1/user"
-        logger.info(f"Making request to: {auth_url}")
+        # Get the Supabase client
+        supabase = get_supabase_client()
         
-        # Explicitly set headers to ensure Authorization header is always included
-        headers = {
-            "Authorization": f"Bearer {token}",
-            "apikey": anon_key,
-            "Content-Type": "application/json"
-        }
+        # Use the built-in auth method to get user from token
+        logger.info("Verifying token with Supabase SDK")
+        user_response = supabase.auth.get_user(token)
         
-        response = requests.get(
-            auth_url,
-            headers=headers,
-            timeout=10
-        )
-        
-        logger.info(f"Supabase auth response status: {response.status_code}")
-        
-        if response.status_code != 200:
-            logger.error(f"Supabase auth failed with status {response.status_code}: {response.text}")
-            logger.error(f"Response headers: {dict(response.headers)}")
+        if not user_response or not user_response.user:
+            logger.error("Invalid token - no user returned")
             raise AuthError("Invalid authentication token")
         
-        return response.json()
+        # Convert the user object to a dictionary
+        user_data = {
+            "id": user_response.user.id,
+            "email": user_response.user.email,
+            "email_confirmed_at": user_response.user.email_confirmed_at,
+            "created_at": user_response.user.created_at,
+            "updated_at": user_response.user.updated_at,
+            "role": user_response.user.role,
+            "app_metadata": user_response.user.app_metadata,
+            "user_metadata": user_response.user.user_metadata
+        }
         
-    except requests.RequestException as e:
-        logger.error(f"Request to Supabase failed: {str(e)}")
-        logger.error(f"Request URL was: {supabase_url}/auth/v1/user")
+        logger.info(f"Successfully verified user: {user_data['id']} ({user_data['email']})")
+        return user_data
+        
+    except Exception as e:
+        logger.error(f"Token verification failed: {str(e)}")
         raise AuthError("Failed to verify token")
 
 async def get_current_user(credentials: HTTPAuthorizationCredentials = Security(security)) -> Dict:
