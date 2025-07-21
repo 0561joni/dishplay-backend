@@ -5,7 +5,7 @@ from typing import Optional, Dict
 import logging
 import os
 from datetime import datetime
-import requests
+import requests  # Using requests directly without session for token verification
 
 from .async_supabase import async_supabase_client
 from .cache import user_cache
@@ -35,15 +35,20 @@ def verify_token_with_supabase(token: str) -> Dict:
     
     try:
         # Make a synchronous request to Supabase
+        # Using a fresh request without session to ensure complete isolation
         auth_url = f"{supabase_url}/auth/v1/user"
         logger.info(f"Making request to: {auth_url}")
         
+        # Explicitly set headers to ensure Authorization header is always included
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "apikey": anon_key,
+            "Content-Type": "application/json"
+        }
+        
         response = requests.get(
             auth_url,
-            headers={
-                "Authorization": f"Bearer {token}",
-                "apikey": anon_key
-            },
+            headers=headers,
             timeout=10
         )
         
@@ -81,8 +86,10 @@ async def get_current_user(credentials: HTTPAuthorizationCredentials = Security(
         cache_key = f"user:{user_id}"
         cached_user = await user_cache.get(cache_key)
         if cached_user:
-            cached_user["token"] = token  # Always use the current token
-            return cached_user
+            # Create a copy to avoid modifying cached data
+            user_with_token = cached_user.copy()
+            user_with_token["token"] = token  # Always use the current token
+            return user_with_token
         
         # Get additional user data from the users table
         try:
