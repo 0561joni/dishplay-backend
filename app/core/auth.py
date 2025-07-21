@@ -29,12 +29,17 @@ async def verify_token_with_supabase(token: str) -> Dict:
             logger.error("No token provided")
             raise AuthError("No authentication token provided")
         
+        # Check for common frontend issues
+        if token.lower() in ['null', 'undefined', 'none', '']:
+            logger.error(f"Invalid token value received: '{token}'")
+            raise AuthError("No valid authentication token provided. Please log in again.")
+        
         # Check if token looks like a JWT (should have 3 parts separated by dots)
         token_parts = token.split('.')
         if len(token_parts) != 3:
             logger.error(f"Invalid token format - expected 3 parts, got {len(token_parts)}")
             logger.error(f"Token preview: {token[:50]}...")
-            raise AuthError("Invalid token format")
+            raise AuthError("Invalid token format. Please log in again.")
         
         # Use the async wrapper to get user from token
         logger.info("Verifying token with Supabase SDK")
@@ -67,7 +72,19 @@ async def verify_token_with_supabase(token: str) -> Dict:
         raise AuthError("Failed to verify token")
 
 async def get_current_user(credentials: HTTPAuthorizationCredentials = Security(security)) -> Dict:
-    """Get current user from JWT token"""
+    """Get current user from JWT token
+    
+    Expected token format:
+    - Must be a valid Supabase JWT access token
+    - Should be sent in Authorization header as: "Bearer <token>"
+    - Token should have 3 parts separated by dots (standard JWT format)
+    - Frontend should get this token from Supabase auth after login
+    
+    Common issues:
+    - Sending "null" or "undefined" string instead of actual token
+    - Not refreshing expired tokens
+    - Using session token instead of access token
+    """
     token = credentials.credentials
     
     # Log token info for debugging
