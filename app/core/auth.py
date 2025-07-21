@@ -8,7 +8,6 @@ from datetime import datetime
 
 from .async_supabase import async_supabase_client
 from .cache import user_cache
-from .supabase_client import get_supabase_client
 
 logger = logging.getLogger(__name__)
 
@@ -22,15 +21,24 @@ class AuthError(HTTPException):
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-def verify_token_with_supabase(token: str) -> Dict:
+async def verify_token_with_supabase(token: str) -> Dict:
     """Verify token using Supabase SDK's built-in method"""
     try:
-        # Get the Supabase client
-        supabase = get_supabase_client()
+        # Log token format for debugging
+        if not token:
+            logger.error("No token provided")
+            raise AuthError("No authentication token provided")
         
-        # Use the built-in auth method to get user from token
+        # Check if token looks like a JWT (should have 3 parts separated by dots)
+        token_parts = token.split('.')
+        if len(token_parts) != 3:
+            logger.error(f"Invalid token format - expected 3 parts, got {len(token_parts)}")
+            logger.error(f"Token preview: {token[:50]}...")
+            raise AuthError("Invalid token format")
+        
+        # Use the async wrapper to get user from token
         logger.info("Verifying token with Supabase SDK")
-        user_response = supabase.auth.get_user(token)
+        user_response = await async_supabase_client.auth_get_user(token)
         
         if not user_response or not user_response.user:
             logger.error("Invalid token - no user returned")
@@ -40,28 +48,35 @@ def verify_token_with_supabase(token: str) -> Dict:
         user_data = {
             "id": user_response.user.id,
             "email": user_response.user.email,
-            "email_confirmed_at": user_response.user.email_confirmed_at,
-            "created_at": user_response.user.created_at,
-            "updated_at": user_response.user.updated_at,
-            "role": user_response.user.role,
-            "app_metadata": user_response.user.app_metadata,
-            "user_metadata": user_response.user.user_metadata
+            "email_confirmed_at": getattr(user_response.user, 'email_confirmed_at', None),
+            "created_at": getattr(user_response.user, 'created_at', None),
+            "updated_at": getattr(user_response.user, 'updated_at', None),
+            "role": getattr(user_response.user, 'role', None),
+            "app_metadata": getattr(user_response.user, 'app_metadata', {}),
+            "user_metadata": getattr(user_response.user, 'user_metadata', {})
         }
         
         logger.info(f"Successfully verified user: {user_data['id']} ({user_data['email']})")
         return user_data
         
+    except AuthError:
+        raise
     except Exception as e:
         logger.error(f"Token verification failed: {str(e)}")
+        logger.error(f"Error type: {type(e).__name__}")
         raise AuthError("Failed to verify token")
 
 async def get_current_user(credentials: HTTPAuthorizationCredentials = Security(security)) -> Dict:
     """Get current user from JWT token"""
     token = credentials.credentials
     
+    # Log token info for debugging
+    logger.info(f"Received token (first 20 chars): {token[:20] if token else 'None'}...")
+    logger.info(f"Token length: {len(token) if token else 0}")
+    
     try:
         # Verify token with Supabase
-        auth_data = verify_token_with_supabase(token)
+        auth_data = await verify_token_with_supabase(token)
         
         user_id = auth_data.get("id")
         email = auth_data.get("email", "")
