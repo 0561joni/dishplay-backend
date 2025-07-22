@@ -59,7 +59,16 @@ Important rules:
 Menu items to translate:
 {json.dumps(items_to_translate, ensure_ascii=False)}
 
-Return the translated items as a JSON array with the same structure."""
+Return a JSON object with this exact structure:
+{{
+    "items": [
+        {{
+            "id": "original_id_here",
+            "name": "translated_name_here",
+            "description": "translated_description_here_or_null"
+        }}
+    ]
+}}"""
 
     try:
         response = client.chat.completions.create(
@@ -79,13 +88,24 @@ Return the translated items as a JSON array with the same structure."""
         )
         
         content = response.choices[0].message.content
+        logger.info(f"Raw OpenAI translation response: {content}")
+        
         translated_data = json.loads(content)
+        logger.info(f"Parsed translation data: {translated_data}")
         
         # Get the items array from the response
-        translated_items = translated_data.get("items", translated_data) if isinstance(translated_data, dict) else translated_data
+        if isinstance(translated_data, dict) and "items" in translated_data:
+            translated_items = translated_data["items"]
+        elif isinstance(translated_data, list):
+            translated_items = translated_data
+        else:
+            logger.warning(f"Unexpected translation data format: {translated_data}")
+            translated_items = translated_data
+        
+        logger.info(f"Extracted translated items: {translated_items}")
         
         # Merge translations back with original items
-        translated_map = {item["id"]: item for item in translated_items if "id" in item}
+        translated_map = {item["id"]: item for item in translated_items if isinstance(item, dict) and "id" in item}
         
         result_items = []
         for original_item in items:
