@@ -175,9 +175,17 @@ async def upload_menu(
             # Prepare all image search tasks
             image_search_tasks = []
             for menu_item_id, menu_item_data, item in menu_item_records:
-                search_query = f"{item['name']} dish food"
-                if item.get("description"):
-                    search_query += f" {item['description'][:50]}"  # Add partial description
+                # Use English name for search if available, otherwise use original
+                search_name = item.get('name_en', item['name'])
+                search_query = f"{search_name} dish food"
+                
+                # Add search terms if available
+                if item.get("search_terms"):
+                    search_query += f" {item['search_terms']}"
+                elif item.get("description_en"):
+                    search_query += f" {item['description_en'][:50]}"
+                elif item.get("description"):
+                    search_query += f" {item['description'][:50]}"
                 
                 # Create coroutine for image search
                 task = search_images_for_item(search_query, limit=2)

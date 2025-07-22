@@ -6,6 +6,7 @@ import os
 from typing import List, Dict, Optional
 import re
 from app.utils.currency_detector import detect_currency_comprehensive
+from app.services.translation_service import detect_language, translate_to_english_for_search
 
 logger = logging.getLogger(__name__)
 
@@ -116,6 +117,14 @@ Important:
         
         logger.info(f"Detected currency: {detected_currency}")
         
+        # Detect language from menu content
+        sample_text = " ".join([item.get("name", "") for item in items[:5]])  # Use first 5 items
+        if restaurant_name:
+            sample_text = f"{restaurant_name} {sample_text}"
+        
+        detected_language = await detect_language(sample_text)
+        logger.info(f"Detected language: {detected_language}")
+        
         # Validate and clean items
         cleaned_items = []
         for item in items:
@@ -125,11 +134,27 @@ Important:
             cleaned_item = {
                 "name": clean_text(item["name"]),
                 "restaurant_name": restaurant_name,
-                "currency": detected_currency
+                "currency": detected_currency,
+                "original_language": detected_language
             }
             
             if item.get("description"):
                 cleaned_item["description"] = clean_text(item["description"])
+            
+            # Add English translations for search if not already in English
+            if detected_language != "en":
+                english_data = await translate_to_english_for_search(
+                    cleaned_item["name"],
+                    cleaned_item.get("description")
+                )
+                cleaned_item["name_en"] = english_data["name"]
+                cleaned_item["search_terms"] = english_data["search_terms"]
+                if english_data.get("description"):
+                    cleaned_item["description_en"] = english_data["description"]
+            else:
+                # Already in English
+                cleaned_item["name_en"] = cleaned_item["name"]
+                cleaned_item["search_terms"] = ""
             
             if item.get("price") is not None:
                 try:
@@ -142,7 +167,7 @@ Important:
             
             cleaned_items.append(cleaned_item)
         
-        logger.info(f"Extracted {len(cleaned_items)} menu items")
+        logger.info(f"Extracted {len(cleaned_items)} menu items in {detected_language}")
         return cleaned_items
         
     except Exception as e:

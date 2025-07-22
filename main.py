@@ -16,7 +16,7 @@ load_dotenv()
 # Add the current directory to Python path for imports
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from app.routers import auth, menu, user
+from app.routers import auth, menu, user, translation
 from app.core.logging import setup_logging
 from app.core.supabase_client import get_supabase_client, close_connections
 from app.core.cache import cache_cleanup_task
@@ -115,6 +115,7 @@ app.add_middleware(
 app.include_router(auth.router, prefix="/api/auth", tags=["Authentication"])
 app.include_router(menu.router, prefix="/api/menu", tags=["Menu"])
 app.include_router(user.router, prefix="/api/user", tags=["User"])
+app.include_router(translation.router, prefix="/api/translation", tags=["Translation"])
 
 @app.get("/")
 async def root():

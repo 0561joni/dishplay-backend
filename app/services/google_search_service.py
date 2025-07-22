@@ -193,7 +193,7 @@ async def search_images_batch(items: List[Dict[str, str]], limit_per_item: int =
         base_name = item['name']
         
         # First query: "item name plated dish"
-        query1 = f"{base_name} plated dish"
+        query1 = f"{base_name} dish"
         
         # Second query: "item name food photography" with description
         query2 = f"{base_name} food photography"
