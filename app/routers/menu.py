@@ -1,11 +1,12 @@
 # app/routers/menu.py
-from fastapi import APIRouter, UploadFile, File, Depends, HTTPException, status
+from fastapi import APIRouter, UploadFile, File, Depends, HTTPException, status, WebSocket, WebSocketDisconnect
 from typing import Dict, List, Optional
 import logging
 import asyncio
 from datetime import datetime
 import uuid
 import os
+import json
 
 from app.core.auth import get_current_user, verify_user_credits, deduct_user_credits
 from app.services.image_processor import process_and_optimize_image, validate_image_file
@@ -13,6 +14,7 @@ from app.services.openai_service import extract_menu_items
 from app.services.google_search_service import search_images_for_item
 from app.core.async_supabase import async_supabase_client
 from app.models.menu import MenuResponse, MenuItem
+from app.services.progress_tracker import progress_tracker
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -96,6 +98,10 @@ async def upload_menu(
     
     # Create menu record
     menu_id = str(uuid.uuid4())
+    
+    # Start progress tracking (estimate 10 items initially)
+    await progress_tracker.start_tracking(menu_id, estimated_items=10)
+    
     try:
         menu_response = await async_supabase_client.table_insert("menus", {
             "id": menu_id,
@@ -105,6 +111,7 @@ async def upload_menu(
         })
         
         logger.info(f"Created menu record {menu_id} for user {current_user['id']}")
+        await progress_tracker.update_progress(menu_id, "initializing", 5)
     except Exception as e:
         logger.error(f"Failed to create menu record: {str(e)}")
         raise HTTPException(
@@ -120,17 +127,27 @@ async def upload_menu(
         else:
             # Normal mode: process image and extract items
             logger.info(f"Processing image for menu {menu_id}")
+            await progress_tracker.update_progress(menu_id, "image_processing", 10)
             process_start = datetime.utcnow()
             base64_image = await process_and_optimize_image(contents)
             process_time = (datetime.utcnow() - process_start).total_seconds()
             logger.info(f"Image processing completed in {process_time:.2f}s")
+            await progress_tracker.update_progress(menu_id, "image_processed", 20)
             
             # Extract menu items using OpenAI
             logger.info(f"Extracting menu items for menu {menu_id}")
+            await progress_tracker.update_progress(menu_id, "extracting_menu", 25)
             extraction_start = datetime.utcnow()
             extracted_items = await extract_menu_items(base64_image)
             extraction_time = (datetime.utcnow() - extraction_start).total_seconds()
             logger.info(f"Menu extraction completed in {extraction_time:.2f}s, found {len(extracted_items) if extracted_items else 0} items")
+            
+            # Update progress with actual item count
+            if extracted_items:
+                await progress_tracker.update_progress(
+                    menu_id, "menu_extracted", 40,
+                    {"item_count": len(extracted_items)}
+                )
         
         if not extracted_items:
             # Update menu status to failed
@@ -163,7 +180,9 @@ async def upload_menu(
         
         # Insert all menu items at once
         menu_items_to_insert = [record[1] for record in menu_item_records]
+        await progress_tracker.update_progress(menu_id, "saving_items", 45)
         await async_supabase_client.table_insert("menu_items", menu_items_to_insert)
+        await progress_tracker.update_progress(menu_id, "items_saved", 50)
         
         if TEST_MODE:
             # Test mode: use mock images
@@ -193,6 +212,7 @@ async def upload_menu(
             
             # Execute all image searches in parallel
             logger.info(f"Starting parallel image search for {len(image_search_tasks)} items")
+            await progress_tracker.update_progress(menu_id, "searching_images", 55)
             search_start = datetime.utcnow()
             image_results = await asyncio.gather(
                 *[task for _, _, task in image_search_tasks],
@@ -200,6 +220,7 @@ async def upload_menu(
             )
             search_time = (datetime.utcnow() - search_start).total_seconds()
             logger.info(f"Parallel image search completed in {search_time:.2f}s")
+            await progress_tracker.update_progress(menu_id, "images_found", 85)
         
         # Process results and prepare image records
         all_image_records = []
@@ -240,15 +261,20 @@ async def upload_menu(
         
         # Batch insert all image records
         if all_image_records:
+            await progress_tracker.update_progress(menu_id, "saving_images", 90)
             await async_supabase_client.table_insert("item_images", all_image_records)
         
         # Update menu status to completed
+        await progress_tracker.update_progress(menu_id, "finalizing", 95)
         await async_supabase_client.table_update("menus", {
             "status": "completed"
         }, eq={"id": menu_id})
         
         # Deduct credits
         await deduct_user_credits(current_user["id"], credits=1)
+        
+        # Mark progress as complete
+        await progress_tracker.complete_task(menu_id, success=True)
         
         total_time = (datetime.utcnow() - start_time).total_seconds()
         logger.info(f"Successfully processed menu {menu_id} with {len(menu_items)} items in {total_time:.2f}s")
@@ -266,10 +292,14 @@ async def upload_menu(
         )
         
     except HTTPException:
+        await progress_tracker.complete_task(menu_id, success=False)
         raise
     except Exception as e:
         total_time = (datetime.utcnow() - start_time).total_seconds()
         logger.error(f"Error processing menu {menu_id} after {total_time:.2f}s: {str(e)}", exc_info=True)
+        
+        # Mark progress as failed
+        await progress_tracker.complete_task(menu_id, success=False)
         
         # Update menu status to failed
         try:
@@ -374,3 +404,94 @@ async def get_user_menus(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to fetch menus"
         )
+
+@router.websocket("/ws/progress/{menu_id}")
+async def websocket_progress(websocket: WebSocket, menu_id: str):
+    """WebSocket endpoint for real-time progress updates"""
+    await websocket.accept()
+    logger.info(f"WebSocket connection established for menu {menu_id}")
+    
+    async def send_progress(data: Dict[str, any]):
+        """Callback to send progress data through WebSocket"""
+        try:
+            await websocket.send_json({
+                "menu_id": menu_id,
+                "status": data.get("status"),
+                "stage": data.get("stage"),
+                "progress": data.get("progress"),
+                "message": data.get("message"),
+                "estimated_time_remaining": data.get("estimated_time_remaining", 0),
+                "item_count": data.get("item_count", 0)
+            })
+        except Exception as e:
+            logger.error(f"Error sending WebSocket message: {e}")
+    
+    try:
+        # Subscribe to progress updates
+        await progress_tracker.subscribe(menu_id, send_progress)
+        
+        # Send initial progress if available
+        current_progress = await progress_tracker.get_progress(menu_id)
+        if current_progress:
+            await send_progress(current_progress)
+        
+        # Keep connection alive
+        while True:
+            try:
+                # Wait for client messages (ping/pong)
+                data = await websocket.receive_text()
+                if data == "ping":
+                    await websocket.send_text("pong")
+            except WebSocketDisconnect:
+                break
+            except Exception as e:
+                logger.error(f"WebSocket error: {e}")
+                break
+                
+    finally:
+        # Unsubscribe when connection closes
+        await progress_tracker.unsubscribe(menu_id, send_progress)
+        logger.info(f"WebSocket connection closed for menu {menu_id}")
+
+@router.get("/progress/{menu_id}")
+async def get_menu_progress(
+    menu_id: str,
+    current_user: Dict = Depends(get_current_user)
+):
+    """Get current progress for a menu processing task"""
+    progress = await progress_tracker.get_progress(menu_id)
+    
+    if not progress:
+        # Check if menu exists and get its status
+        try:
+            menu_response = await async_supabase_client.table_select(
+                "menus",
+                "id, status",
+                eq={"id": menu_id, "user_id": current_user["id"]},
+                single=True
+            )
+            
+            if not menu_response.data:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Menu not found"
+                )
+            
+            # Return completed status from database
+            return {
+                "menu_id": menu_id,
+                "status": menu_response.data["status"],
+                "progress": 100 if menu_response.data["status"] == "completed" else 0,
+                "message": {"text": "Menu processing completed", "emoji": "✅"}
+            }
+            
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Error checking menu status: {e}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to get menu progress"
+            )
+    
+    return progress
