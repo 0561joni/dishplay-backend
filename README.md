@@ -6,8 +6,8 @@ A robust FastAPI backend for the DishPlay menu digitization application.
 
 - **Menu Processing**: Upload menu images and extract items using GPT-4 Vision
 - **Smart Image Generation**: 
-  - Uses DALL-E 3 for the first 7 items (higher quality)
-  - Falls back to DALL-E 2 for additional items (cost-efficient)
+  - Uses DALL-E 3 for the first item (highest quality)
+  - Uses DALL-E 2 for all additional items (cost-efficient)
   - Intelligent caching to avoid regenerating existing images
   - Automatic retry with exponential backoff
   - Rate limiting to respect API limits

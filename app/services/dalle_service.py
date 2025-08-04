@@ -20,7 +20,7 @@ client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 MENU_IMAGES_BUCKET = os.getenv("SUPABASE_BUCKET_MENU_IMAGES", "menu-images")
 
 # Rate limits
-DALLE3_MAX_PER_MIN = 7
+DALLE3_MAX_PER_MIN = 1  # Only use DALL-E 3 for the first image
 DALLE2_MAX_PER_MIN = 50
 
 # Retry configuration
