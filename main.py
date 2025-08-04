@@ -49,9 +49,7 @@ async def lifespan(app: FastAPI):
     required_vars = [
         "SUPABASE_URL",
         "SUPABASE_ANON_KEY",
-        "OPENAI_API_KEY",
-        "GOOGLE_CSE_API_KEY",
-        "GOOGLE_CSE_ID"
+        "OPENAI_API_KEY"
     ]
     
     missing_vars = [var for var in required_vars if not os.getenv(var)]

@@ -11,7 +11,7 @@ import json
 from app.core.auth import get_current_user, verify_user_credits, deduct_user_credits
 from app.services.image_processor import process_and_optimize_image, validate_image_file
 from app.services.openai_service import extract_menu_items
-from app.services.google_search_service import search_images_for_item
+from app.services.dalle_service import generate_images_for_item
 from app.core.async_supabase import async_supabase_client
 from app.models.menu import MenuResponse, MenuItem
 from app.services.progress_tracker import progress_tracker
@@ -194,33 +194,27 @@ async def upload_menu(
             # Prepare all image search tasks
             image_search_tasks = []
             for menu_item_id, menu_item_data, item in menu_item_records:
-                # Use English name for search if available, otherwise use original
-                search_name = item.get('name_en', item['name'])
-                search_query = f"{search_name} dish food"
+                # Use English name for generation if available, otherwise use original
+                item_name = item.get('name_en', item['name'])
                 
-                # Add search terms if available
-                if item.get("search_terms"):
-                    search_query += f" {item['search_terms']}"
-                elif item.get("description_en"):
-                    search_query += f" {item['description_en'][:50]}"
-                elif item.get("description"):
-                    search_query += f" {item['description'][:50]}"
+                # Use description for better context
+                description = item.get('description_en') or item.get('description')
                 
-                # Create coroutine for image search
-                task = search_images_for_item(search_query, limit=2)
+                # Create coroutine for image generation
+                task = generate_images_for_item(item_name, description, limit=2)
                 image_search_tasks.append((menu_item_id, item, task))
             
-            # Execute all image searches in parallel
-            logger.info(f"Starting parallel image search for {len(image_search_tasks)} items")
-            await progress_tracker.update_progress(menu_id, "searching_images", 55)
-            search_start = datetime.utcnow()
+            # Execute all image generations in parallel
+            logger.info(f"Starting parallel image generation for {len(image_search_tasks)} items")
+            await progress_tracker.update_progress(menu_id, "generating_images", 55)
+            generation_start = datetime.utcnow()
             image_results = await asyncio.gather(
                 *[task for _, _, task in image_search_tasks],
-                return_exceptions=True  # Don't fail if one search fails
+                return_exceptions=True  # Don't fail if one generation fails
             )
-            search_time = (datetime.utcnow() - search_start).total_seconds()
-            logger.info(f"Parallel image search completed in {search_time:.2f}s")
-            await progress_tracker.update_progress(menu_id, "images_found", 85)
+            generation_time = (datetime.utcnow() - generation_start).total_seconds()
+            logger.info(f"Parallel image generation completed in {generation_time:.2f}s")
+            await progress_tracker.update_progress(menu_id, "images_generated", 85)
         
         # Process results and prepare image records
         all_image_records = []
@@ -237,7 +231,7 @@ async def upload_menu(
             
             # Handle results or exceptions
             if isinstance(image_results[i], Exception):
-                logger.warning(f"Image search failed for item '{item['name']}': {str(image_results[i])}")
+                logger.warning(f"Image generation failed for item '{item['name']}': {str(image_results[i])}")
             elif image_results[i]:
                 image_urls = image_results[i]
                 
@@ -246,7 +240,7 @@ async def upload_menu(
                     all_image_records.append({
                         "menu_item_id": menu_item_id,
                         "image_url": image_url,
-                        "source": "google_cse",
+                        "source": "dalle-3",
                         "is_primary": j == 0
                     })
             
