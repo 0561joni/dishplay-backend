@@ -11,7 +11,7 @@ import json
 from app.core.auth import get_current_user, verify_user_credits, deduct_user_credits
 from app.services.image_processor import process_and_optimize_image, validate_image_file
 from app.services.openai_service import extract_menu_items
-from app.services.dalle_service import generate_images_for_item
+from app.services.dalle_service import generate_images_batch
 from app.core.async_supabase import async_supabase_client
 from app.models.menu import MenuResponse, MenuItem
 from app.services.progress_tracker import progress_tracker
@@ -188,11 +188,11 @@ async def upload_menu(
             # Test mode: use mock images
             logger.info(f"TEST MODE: Using mock images for {len(menu_item_records)} items")
             mock_images = get_mock_images()
-            image_results = [mock_images for _ in menu_item_records]
+            image_results = {record[0]: [(mock_images[0], "mock")] for record in menu_item_records}
         else:
-            # Normal mode: search for images
-            # Prepare all image search tasks
-            image_search_tasks = []
+            # Normal mode: generate images using batch processing
+            # Prepare items for batch generation
+            items_for_generation = []
             for menu_item_id, menu_item_data, item in menu_item_records:
                 # Use English name for generation if available, otherwise use original
                 item_name = item.get('name_en', item['name'])
@@ -200,49 +200,49 @@ async def upload_menu(
                 # Use description for better context
                 description = item.get('description_en') or item.get('description')
                 
-                # Create coroutine for image generation
-                task = generate_images_for_item(item_name, description, limit=1)
-                image_search_tasks.append((menu_item_id, item, task))
+                items_for_generation.append({
+                    'id': menu_item_id,
+                    'name': item_name,
+                    'description': description
+                })
             
-            # Execute all image generations in parallel
-            logger.info(f"Starting parallel image generation for {len(image_search_tasks)} items")
+            # Execute batch image generation with intelligent model selection
+            logger.info(f"Starting batch image generation for {len(items_for_generation)} items")
             await progress_tracker.update_progress(menu_id, "generating_images", 55)
             generation_start = datetime.utcnow()
-            image_results = await asyncio.gather(
-                *[task for _, _, task in image_search_tasks],
-                return_exceptions=True  # Don't fail if one generation fails
-            )
+            
+            # Call the new batch generation function
+            image_results = await generate_images_batch(items_for_generation)
+            
             generation_time = (datetime.utcnow() - generation_start).total_seconds()
-            logger.info(f"Parallel image generation completed in {generation_time:.2f}s")
+            logger.info(f"Batch image generation completed in {generation_time:.2f}s")
             await progress_tracker.update_progress(menu_id, "images_generated", 85)
         
         # Process results and prepare image records
         all_image_records = []
         
-        if TEST_MODE:
-            # For test mode, iterate over menu_item_records
-            items_to_process = [(record[0], record[2]) for record in menu_item_records]
-        else:
-            # For normal mode, use image_search_tasks
-            items_to_process = [(task[0], task[1]) for task in image_search_tasks]
-        
-        for i, (menu_item_id, item) in enumerate(items_to_process):
+        for menu_item_id, menu_item_data, item in menu_item_records:
             image_urls = []
             
-            # Handle results or exceptions
-            if isinstance(image_results[i], Exception):
-                logger.warning(f"Image generation failed for item '{item['name']}': {str(image_results[i])}")
-            elif image_results[i]:
-                image_urls = image_results[i]
+            # Get results for this item
+            if menu_item_id in image_results:
+                item_results = image_results[menu_item_id]
                 
-                # Prepare image records for batch insert
-                for j, image_url in enumerate(image_urls):
-                    all_image_records.append({
-                        "menu_item_id": menu_item_id,
-                        "image_url": image_url,
-                        "source": "dalle-3",
-                        "is_primary": j == 0
-                    })
+                # Process each generated image
+                for j, (image_url, model_used) in enumerate(item_results):
+                    if image_url:
+                        image_urls.append(image_url)
+                        
+                        # Skip database insert for cached images
+                        if model_used != "cached":
+                            all_image_records.append({
+                                "menu_item_id": menu_item_id,
+                                "image_url": image_url,
+                                "source": model_used,  # "dalle-3", "dalle-2", or "mock"
+                                "is_primary": j == 0
+                            })
+            else:
+                logger.warning(f"No image generated for item '{item['name']}'")
             
             # Add to response
             menu_items.append({

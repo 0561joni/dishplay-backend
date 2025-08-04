@@ -3,12 +3,13 @@ import httpx
 import aiohttp
 import logging
 import os
-from typing import List, Optional, Dict
 import asyncio
+from typing import List, Optional, Dict, Tuple
 from openai import AsyncOpenAI
 from slugify import slugify
 from app.core.supabase_client import get_supabase_client
-import io
+import time
+from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
@@ -18,19 +19,64 @@ client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 # Supabase storage bucket name
 MENU_IMAGES_BUCKET = os.getenv("SUPABASE_BUCKET_MENU_IMAGES", "menu-images")
 
-async def download_image(url: str) -> bytes:
-    """Download image from URL and return bytes"""
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(url) as response:
-                if response.status == 200:
-                    return await response.read()
-                else:
-                    logger.error(f"Failed to download image: HTTP {response.status}")
-                    raise Exception(f"Failed to download image: HTTP {response.status}")
-    except Exception as e:
-        logger.error(f"Error downloading image from {url}: {str(e)}")
-        raise
+# Rate limits
+DALLE3_MAX_PER_MIN = 7
+DALLE2_MAX_PER_MIN = 50
+
+# Retry configuration
+MAX_RETRIES = 3
+INITIAL_RETRY_DELAY = 1.0  # seconds
+
+class RateLimiter:
+    """Simple rate limiter for API calls"""
+    def __init__(self, max_calls: int, time_window: int = 60):
+        self.max_calls = max_calls
+        self.time_window = time_window
+        self.calls = []
+        self.lock = asyncio.Lock()
+    
+    async def wait_if_needed(self):
+        """Wait if rate limit would be exceeded"""
+        async with self.lock:
+            now = time.time()
+            # Remove old calls outside the time window
+            self.calls = [call_time for call_time in self.calls if now - call_time < self.time_window]
+            
+            if len(self.calls) >= self.max_calls:
+                # Wait until the oldest call is outside the time window
+                sleep_time = self.time_window - (now - self.calls[0]) + 0.1
+                logger.info(f"Rate limit reached, waiting {sleep_time:.1f} seconds")
+                await asyncio.sleep(sleep_time)
+                # Remove the old call
+                self.calls.pop(0)
+            
+            # Record this call
+            self.calls.append(now)
+
+# Initialize rate limiters
+dalle3_limiter = RateLimiter(DALLE3_MAX_PER_MIN)
+dalle2_limiter = RateLimiter(DALLE2_MAX_PER_MIN)
+
+async def download_image_with_retry(url: str, max_retries: int = MAX_RETRIES) -> bytes:
+    """Download image from URL with retry logic"""
+    for attempt in range(max_retries):
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url) as response:
+                    if response.status == 200:
+                        return await response.read()
+                    else:
+                        logger.error(f"Failed to download image: HTTP {response.status}")
+                        if attempt < max_retries - 1:
+                            await asyncio.sleep(INITIAL_RETRY_DELAY * (2 ** attempt))
+                            continue
+                        raise Exception(f"Failed to download image: HTTP {response.status}")
+        except Exception as e:
+            logger.error(f"Error downloading image (attempt {attempt + 1}/{max_retries}): {str(e)}")
+            if attempt < max_retries - 1:
+                await asyncio.sleep(INITIAL_RETRY_DELAY * (2 ** attempt))
+                continue
+            raise
 
 async def upload_to_supabase_storage(image_data: bytes, filename: str) -> Optional[str]:
     """Upload image to Supabase storage and return public URL"""
@@ -39,18 +85,6 @@ async def upload_to_supabase_storage(image_data: bytes, filename: str) -> Option
         
         # Upload to storage
         file_path = f"generated/{filename}"
-        
-        # Check if file already exists
-        try:
-            existing_files = supabase.storage.from_(MENU_IMAGES_BUCKET).list(path="generated/")
-            if any(file['name'] == filename for file in existing_files):
-                logger.info(f"Image already exists in storage: {filename}")
-                # Get public URL for existing file
-                public_url = supabase.storage.from_(MENU_IMAGES_BUCKET).get_public_url(file_path)
-                return public_url
-        except Exception as e:
-            logger.debug(f"Error checking existing files: {e}")
-            # Continue with upload if check fails
         
         # Upload the image
         response = supabase.storage.from_(MENU_IMAGES_BUCKET).upload(
@@ -72,125 +106,220 @@ async def upload_to_supabase_storage(image_data: bytes, filename: str) -> Option
         logger.error(f"Error uploading image to Supabase: {str(e)}")
         return None
 
-async def generate_image_for_item(item_name: str, description: Optional[str] = None) -> Optional[str]:
-    """Generate a single image for a menu item using DALL-E 3 and store in Supabase"""
-    
+async def check_existing_image(item_name: str) -> Optional[str]:
+    """Check if image already exists in Supabase storage"""
     try:
-        # Generate filename from item name
-        filename = f"{slugify(item_name)}.jpg"
-        
-        # Check if image already exists in Supabase
         supabase = get_supabase_client()
+        filename = f"{slugify(item_name)}.jpg"
         file_path = f"generated/{filename}"
         
+        # List files in the generated directory
+        existing_files = supabase.storage.from_(MENU_IMAGES_BUCKET).list(path="generated/")
+        
+        if any(file['name'] == filename for file in existing_files):
+            logger.info(f"Image already exists for '{item_name}', returning cached URL")
+            public_url = supabase.storage.from_(MENU_IMAGES_BUCKET).get_public_url(file_path)
+            return public_url
+            
+    except Exception as e:
+        logger.debug(f"Error checking existing image: {e}")
+    
+    return None
+
+async def generate_with_dalle3(item_name: str, description: Optional[str] = None) -> Optional[Tuple[str, str]]:
+    """Generate image using DALL-E 3 with retry logic"""
+    prompt = f"High-resolution, photorealistic image of {item_name}, plated on a clean white plate, viewed at a 45-degree angle under natural lighting, realistic background, food magazine style"
+    
+    if description:
+        prompt += f". The dish contains: {description}"
+    
+    # Wait for rate limit
+    await dalle3_limiter.wait_if_needed()
+    
+    for attempt in range(MAX_RETRIES):
         try:
-            existing_files = supabase.storage.from_(MENU_IMAGES_BUCKET).list(path="generated/")
-            if any(file['name'] == filename for file in existing_files):
-                logger.info(f"Image already exists for '{item_name}', returning cached URL")
-                public_url = supabase.storage.from_(MENU_IMAGES_BUCKET).get_public_url(file_path)
-                return public_url
+            logger.info(f"Generating image with DALL-E 3 for: {item_name} (attempt {attempt + 1})")
+            
+            response = await client.images.generate(
+                model="dall-e-3",
+                prompt=prompt,
+                size="1024x1024",
+                quality="standard",
+                n=1
+            )
+            
+            if response.data and len(response.data) > 0:
+                return response.data[0].url, "dalle-3"
+            
         except Exception as e:
-            logger.debug(f"Error checking cache: {e}")
-            # Continue with generation if cache check fails
-        
-        # Create a structured prompt for consistent, high-quality food images
-        prompt = f"High-resolution, photorealistic image of {item_name}, plated on a clean white plate, viewed at a 45-degree angle under natural lighting, realistic background, food magazine style"
-        
-        # Add description context if available
-        if description:
-            prompt += f". The dish contains: {description}"
-        
-        logger.info(f"Generating image for: {item_name}")
-        logger.debug(f"DALL-E prompt: {prompt}")
-        
-        # Generate image using DALL-E 3
-        response = await client.images.generate(
-            model="dall-e-3",
-            prompt=prompt,
-            size="1024x1024",
-            quality="standard",
-            n=1
-        )
-        
-        # Extract the temporary image URL
-        if not response.data or len(response.data) == 0:
-            logger.warning(f"No image data returned for '{item_name}'")
-            return None
-        
-        temp_url = response.data[0].url
-        logger.info(f"Successfully generated image for '{item_name}', downloading...")
-        
+            logger.error(f"Error generating with DALL-E 3 (attempt {attempt + 1}): {str(e)}")
+            if attempt < MAX_RETRIES - 1:
+                await asyncio.sleep(INITIAL_RETRY_DELAY * (2 ** attempt))
+                continue
+            
+    return None
+
+async def generate_with_dalle2(item_name: str, description: Optional[str] = None) -> Optional[Tuple[str, str]]:
+    """Generate image using DALL-E 2 with retry logic"""
+    # DALL-E 2 has slightly different requirements, adjust prompt if needed
+    prompt = f"A photorealistic image of {item_name}, professional food photography, clean presentation"
+    
+    if description:
+        # DALL-E 2 works better with shorter prompts
+        prompt = f"{item_name}, {description[:50]}, food photography"
+    
+    # Wait for rate limit
+    await dalle2_limiter.wait_if_needed()
+    
+    for attempt in range(MAX_RETRIES):
+        try:
+            logger.info(f"Generating image with DALL-E 2 for: {item_name} (attempt {attempt + 1})")
+            
+            response = await client.images.generate(
+                model="dall-e-2",
+                prompt=prompt,
+                size="1024x1024",
+                n=1
+            )
+            
+            if response.data and len(response.data) > 0:
+                return response.data[0].url, "dalle-2"
+            
+        except Exception as e:
+            logger.error(f"Error generating with DALL-E 2 (attempt {attempt + 1}): {str(e)}")
+            if attempt < MAX_RETRIES - 1:
+                await asyncio.sleep(INITIAL_RETRY_DELAY * (2 ** attempt))
+                continue
+            
+    return None
+
+async def generate_and_store_image(item_name: str, description: Optional[str] = None, use_dalle3: bool = True) -> Optional[Tuple[str, str]]:
+    """Generate image and store in Supabase, returns (url, model_used)"""
+    
+    # Check if image already exists
+    existing_url = await check_existing_image(item_name)
+    if existing_url:
+        return existing_url, "cached"
+    
+    # Generate with appropriate model
+    generation_result = None
+    if use_dalle3:
+        generation_result = await generate_with_dalle3(item_name, description)
+    else:
+        generation_result = await generate_with_dalle2(item_name, description)
+    
+    if not generation_result:
+        logger.error(f"Failed to generate image for '{item_name}'")
+        return None
+    
+    temp_url, model_used = generation_result
+    
+    try:
         # Download the image
-        image_data = await download_image(temp_url)
-        logger.info(f"Downloaded image for '{item_name}', uploading to Supabase...")
+        logger.info(f"Downloading generated image for '{item_name}'")
+        image_data = await download_image_with_retry(temp_url)
         
-        # Upload to Supabase and get permanent URL
+        # Upload to Supabase
+        filename = f"{slugify(item_name)}.jpg"
         permanent_url = await upload_to_supabase_storage(image_data, filename)
         
         if permanent_url:
-            logger.info(f"Successfully stored image for '{item_name}' at: {permanent_url}")
-            return permanent_url
-        else:
-            logger.error(f"Failed to upload image for '{item_name}'")
-            return None
-            
+            logger.info(f"Successfully stored image for '{item_name}' using {model_used}")
+            return permanent_url, model_used
+        
     except Exception as e:
-        logger.error(f"Error generating image for '{item_name}': {str(e)}")
-        return None
+        logger.error(f"Error processing image for '{item_name}': {str(e)}")
+    
+    return None
 
 async def generate_images_for_item(item_name: str, description: Optional[str] = None, limit: int = 1) -> List[str]:
-    """Generate image(s) for a menu item using DALL-E 3 and store in Supabase
-    
-    Note: DALL-E 3 only supports specific sizes: 1024x1024, 1024x1792, or 1792x1024
-    We use 1024x1024 as the smallest available option.
-    """
+    """Generate image(s) for a menu item - for backward compatibility"""
     
     # Only generate 1 image per item
     limit = 1
     
-    if limit <= 0:
-        return []
+    result = await generate_and_store_image(item_name, description, use_dalle3=True)
     
-    # Generate and store the image
-    image_url = await generate_image_for_item(item_name, description)
-    
-    if image_url:
-        return [image_url]
+    if result:
+        url, _ = result
+        return [url]
     else:
         return []
 
-async def generate_images_batch(items: List[Dict[str, str]], limit_per_item: int = 1) -> Dict[str, List[str]]:
-    """Generate images for multiple menu items concurrently"""
+async def generate_images_batch(items: List[Dict[str, str]], limit_per_item: int = 1) -> Dict[str, List[Tuple[str, str]]]:
+    """
+    Generate images for multiple menu items with intelligent batching
+    Returns dict mapping item_id to list of (url, model_used) tuples
+    """
     
-    async def generate_with_id(item_id: str, item_name: str, description: Optional[str] = None):
-        images = await generate_images_for_item(item_name, description, limit_per_item)
-        return (item_id, images)
+    # Check which items need generation
+    items_to_generate = []
+    results = {}
     
-    # Create tasks for concurrent generation
-    tasks = []
     for item in items:
         item_id = item['id']
         item_name = item['name']
-        description = item.get('description')
         
-        tasks.append(generate_with_id(item_id, item_name, description))
+        # Check cache first
+        existing_url = await check_existing_image(item_name)
+        if existing_url:
+            results[item_id] = [(existing_url, "cached")]
+            logger.info(f"Using cached image for '{item_name}'")
+        else:
+            items_to_generate.append(item)
     
-    # Execute all image generations concurrently
-    results = await asyncio.gather(*tasks, return_exceptions=True)
+    if not items_to_generate:
+        logger.info("All images found in cache")
+        return results
     
-    # Build the result map
-    image_map = {}
-    for result in results:
+    # Split items between DALL-E 3 and DALL-E 2
+    dalle3_items = items_to_generate[:DALLE3_MAX_PER_MIN]
+    dalle2_items = items_to_generate[DALLE3_MAX_PER_MIN:]
+    
+    logger.info(f"Generating {len(dalle3_items)} images with DALL-E 3 and {len(dalle2_items)} with DALL-E 2")
+    
+    # Create tasks for all generations
+    tasks = []
+    
+    # DALL-E 3 tasks
+    for item in dalle3_items:
+        task = generate_and_store_image(
+            item['name'], 
+            item.get('description'),
+            use_dalle3=True
+        )
+        tasks.append((item['id'], task))
+    
+    # DALL-E 2 tasks
+    for item in dalle2_items:
+        task = generate_and_store_image(
+            item['name'], 
+            item.get('description'),
+            use_dalle3=False
+        )
+        tasks.append((item['id'], task))
+    
+    # Execute all tasks concurrently
+    generation_results = await asyncio.gather(
+        *[task for _, task in tasks],
+        return_exceptions=True
+    )
+    
+    # Process results
+    for i, (item_id, _) in enumerate(tasks):
+        result = generation_results[i]
+        
         if isinstance(result, Exception):
-            logger.error(f"Error in batch image generation: {result}")
-            continue
-        
-        item_id, images = result
-        image_map[item_id] = images
+            logger.error(f"Error generating image for item {item_id}: {result}")
+            results[item_id] = []
+        elif result:
+            url, model_used = result
+            results[item_id] = [(url, model_used)]
+        else:
+            results[item_id] = []
     
-    return image_map
+    return results
 
 def get_fallback_image() -> str:
     """Return a fallback image URL when generation fails"""
-    # Using a generic food placeholder from a reliable source
     return "https://via.placeholder.com/1024x1024.png?text=Image+Not+Available"

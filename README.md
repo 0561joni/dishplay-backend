@@ -5,7 +5,13 @@ A robust FastAPI backend for the DishPlay menu digitization application.
 ## Features
 
 - **Menu Processing**: Upload menu images and extract items using GPT-4 Vision
-- **Image Generation**: Automatically generate food images for each menu item using DALL-E 3
+- **Smart Image Generation**: 
+  - Uses DALL-E 3 for the first 7 items (higher quality)
+  - Falls back to DALL-E 2 for additional items (cost-efficient)
+  - Intelligent caching to avoid regenerating existing images
+  - Automatic retry with exponential backoff
+  - Rate limiting to respect API limits
+- **Image Storage**: Permanent storage in Supabase Storage with public URLs
 - **Authentication**: JWT-based authentication with Supabase
 - **Credit System**: Track and manage user credits for menu uploads
 - **Logging**: Comprehensive logging for debugging and monitoring
