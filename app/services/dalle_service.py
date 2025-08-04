@@ -92,7 +92,7 @@ async def upload_to_supabase_storage(image_data: bytes, filename: str) -> Option
             path=file_path,
             file_options={
                 "content-type": "image/jpeg",
-                "upsert": True  # Overwrite if exists
+                "upsert": "true"  # Must be string, not boolean
             }
         )
         
