@@ -11,7 +11,7 @@ import json
 from app.core.auth import get_current_user, verify_user_credits, deduct_user_credits
 from app.services.image_processor import process_and_optimize_image, validate_image_file
 from app.services.openai_service import extract_menu_items
-from app.services.dalle_service import generate_images_batch
+from app.services.dalle_service import generate_images_batch, get_fallback_image
 from app.core.async_supabase import async_supabase_client
 from app.models.menu import MenuResponse, MenuItem
 from app.services.progress_tracker import progress_tracker
@@ -225,7 +225,7 @@ async def upload_menu(
             image_urls = []
             
             # Get results for this item
-            if menu_item_id in image_results:
+            if menu_item_id in image_results and image_results[menu_item_id]:
                 item_results = image_results[menu_item_id]
                 
                 # Process each generated image
@@ -241,8 +241,20 @@ async def upload_menu(
                                 "source": model_used,  # "dalle-3", "dalle-2", or "mock"
                                 "is_primary": j == 0
                             })
-            else:
-                logger.warning(f"No image generated for item '{item['name']}'")
+            
+            # If no images were generated, use fallback placeholder
+            if not image_urls:
+                logger.warning(f"No image generated for item '{item['name']}', using fallback")
+                fallback_url = get_fallback_image()
+                image_urls.append(fallback_url)
+                
+                # Store fallback image in database
+                all_image_records.append({
+                    "menu_item_id": menu_item_id,
+                    "image_url": fallback_url,
+                    "source": "fallback",
+                    "is_primary": True
+                })
             
             # Add to response
             menu_items.append({

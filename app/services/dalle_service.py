@@ -10,6 +10,7 @@ from slugify import slugify
 from app.core.supabase_client import get_supabase_client
 import time
 from datetime import datetime
+import hashlib
 
 logger = logging.getLogger(__name__)
 
@@ -100,17 +101,29 @@ async def upload_to_supabase_storage(image_data: bytes, filename: str) -> Option
         public_url = supabase.storage.from_(MENU_IMAGES_BUCKET).get_public_url(file_path)
         
         logger.info(f"Successfully uploaded image to Supabase: {filename}")
+        logger.info(f"Public URL: {public_url}")
         return public_url
         
     except Exception as e:
         logger.error(f"Error uploading image to Supabase: {str(e)}")
         return None
 
-async def check_existing_image(item_name: str) -> Optional[str]:
+def generate_filename(item_name: str, description: Optional[str] = None) -> str:
+    """Generate a unique filename based on item name and description"""
+    base_name = slugify(item_name)
+    
+    if description:
+        # Create a short hash of the description to make filename unique
+        desc_hash = hashlib.md5(description.encode()).hexdigest()[:8]
+        return f"{base_name}-{desc_hash}.jpg"
+    else:
+        return f"{base_name}.jpg"
+
+async def check_existing_image(item_name: str, description: Optional[str] = None) -> Optional[str]:
     """Check if image already exists in Supabase storage"""
     try:
         supabase = get_supabase_client()
-        filename = f"{slugify(item_name)}.jpg"
+        filename = generate_filename(item_name, description)
         file_path = f"generated/{filename}"
         
         # List files in the generated directory
@@ -119,6 +132,7 @@ async def check_existing_image(item_name: str) -> Optional[str]:
         if any(file['name'] == filename for file in existing_files):
             logger.info(f"Image already exists for '{item_name}', returning cached URL")
             public_url = supabase.storage.from_(MENU_IMAGES_BUCKET).get_public_url(file_path)
+            logger.info(f"Cached public URL: {public_url}")
             return public_url
             
     except Exception as e:
@@ -197,7 +211,7 @@ async def generate_and_store_image(item_name: str, description: Optional[str] = 
     """Generate image and store in Supabase, returns (url, model_used)"""
     
     # Check if image already exists
-    existing_url = await check_existing_image(item_name)
+    existing_url = await check_existing_image(item_name, description)
     if existing_url:
         return existing_url, "cached"
     
@@ -219,8 +233,8 @@ async def generate_and_store_image(item_name: str, description: Optional[str] = 
         logger.info(f"Downloading generated image for '{item_name}'")
         image_data = await download_image_with_retry(temp_url)
         
-        # Upload to Supabase
-        filename = f"{slugify(item_name)}.jpg"
+        # Upload to Supabase with unique filename
+        filename = generate_filename(item_name, description)
         permanent_url = await upload_to_supabase_storage(image_data, filename)
         
         if permanent_url:
@@ -259,9 +273,10 @@ async def generate_images_batch(items: List[Dict[str, str]], limit_per_item: int
     for item in items:
         item_id = item['id']
         item_name = item['name']
+        description = item.get('description')
         
-        # Check cache first
-        existing_url = await check_existing_image(item_name)
+        # Check cache first with description
+        existing_url = await check_existing_image(item_name, description)
         if existing_url:
             results[item_id] = [(existing_url, "cached")]
             logger.info(f"Using cached image for '{item_name}'")
