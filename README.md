@@ -5,7 +5,7 @@ A robust FastAPI backend for the DishPlay menu digitization application.
 ## Features
 
 - **Menu Processing**: Upload menu images and extract items using GPT-4 Vision
-- **Image Search**: Automatically find food images for each menu item using Google Custom Search
+- **Image Generation**: Automatically generate food images for each menu item using DALL-E 3
 - **Authentication**: JWT-based authentication with Supabase
 - **Credit System**: Track and manage user credits for menu uploads
 - **Logging**: Comprehensive logging for debugging and monitoring
@@ -16,7 +16,7 @@ A robust FastAPI backend for the DishPlay menu digitization application.
 - **Database**: Supabase (PostgreSQL)
 - **Authentication**: Supabase Auth with JWT validation
 - **AI**: OpenAI GPT-4 Vision for menu extraction
-- **Image Search**: Google Custom Search API
+- **Image Generation**: OpenAI DALL-E 3 API
 - **Image Processing**: Pillow for optimization
 
 ## Project Structure
@@ -41,7 +41,7 @@ A robust FastAPI backend for the DishPlay menu digitization application.
 │   │   └── user.py          # User profile endpoints
 │   └── services/
 │       ├── __init__.py
-│       ├── google_search_service.py  # Google Custom Search integration
+│       ├── dalle_service.py          # DALL-E 3 image generation
 │       ├── image_processor.py        # Image optimization
 │       └── openai_service.py         # OpenAI GPT-4 Vision integration
 ├── main.py                   # FastAPI application entry point
@@ -72,7 +72,14 @@ A robust FastAPI backend for the DishPlay menu digitization application.
    # Edit .env with your actual values
    ```
 
-5. **Run the application**:
+5. **Set up Supabase Storage**:
+   - Go to your Supabase project dashboard
+   - Navigate to Storage section
+   - Create a new bucket named `menu-images` (or your custom name)
+   - Set the bucket to public for read access
+   - Update the bucket name in `.env` if different from default
+
+6. **Run the application**:
    ```bash
    python main.py
    ```
@@ -102,10 +109,10 @@ A robust FastAPI backend for the DishPlay menu digitization application.
 |----------|-------------|
 | `SUPABASE_URL` | Your Supabase project URL |
 | `SUPABASE_ANON_KEY` | Supabase anonymous key |
+| `SUPABASE_SERVICE_ROLE_KEY` | Supabase service role key (for storage operations) |
 | `SUPABASE_JWT_SECRET` | Supabase JWT secret (optional, defaults to anon key) |
-| `OPENAI_API_KEY` | OpenAI API key for GPT-4 Vision |
-| `GOOGLE_CSE_API_KEY` | Google Custom Search API key |
-| `GOOGLE_CSE_ID` | Google Custom Search Engine ID |
+| `OPENAI_API_KEY` | OpenAI API key for GPT-4 Vision and DALL-E 3 |
+| `SUPABASE_BUCKET_MENU_IMAGES` | Storage bucket name (optional, defaults to "menu-images") |
 | `ENVIRONMENT` | Environment (development/production) |
 | `PORT` | Server port (default: 8000) |
 
