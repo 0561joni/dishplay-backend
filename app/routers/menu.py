@@ -201,7 +201,7 @@ async def upload_menu(
                 description = item.get('description_en') or item.get('description')
                 
                 # Create coroutine for image generation
-                task = generate_images_for_item(item_name, description, limit=2)
+                task = generate_images_for_item(item_name, description, limit=1)
                 image_search_tasks.append((menu_item_id, item, task))
             
             # Execute all image generations in parallel

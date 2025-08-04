@@ -47,58 +47,53 @@ async def generate_image_for_item(item_name: str, description: Optional[str] = N
         logger.error(f"Error generating image for '{item_name}': {str(e)}")
         return None
 
-async def generate_images_for_item(item_name: str, description: Optional[str] = None, limit: int = 2) -> List[str]:
-    """Generate multiple images for a menu item using DALL-E 3
+async def generate_images_for_item(item_name: str, description: Optional[str] = None, limit: int = 1) -> List[str]:
+    """Generate image(s) for a menu item using DALL-E 3
     
-    Note: DALL-E 3 only generates 1 image per request, so we'll make multiple requests
-    for variety if limit > 1
+    Note: DALL-E 3 only supports specific sizes: 1024x1024, 1024x1792, or 1792x1024
+    We use 1024x1024 as the smallest available option.
     """
+    
+    # Only generate 1 image per item
+    limit = 1
     
     if limit <= 0:
         return []
     
     images = []
     
-    # Generate the requested number of images
-    # We'll vary the prompt slightly for each to get different results
-    for i in range(limit):
-        try:
-            if i == 0:
-                # First image: standard presentation
-                prompt = f"High-resolution, photorealistic image of {item_name}, plated on a clean white plate, viewed at a 45-degree angle under natural lighting, realistic background, food magazine style"
-            else:
-                # Second image: different angle/presentation
-                prompt = f"Professional food photography of {item_name}, artfully plated, overhead view, bright natural lighting, minimalist presentation, restaurant quality"
-            
-            # Add description context if available
-            if description:
-                prompt += f". The dish contains: {description}"
-            
-            logger.debug(f"DALL-E prompt #{i+1}: {prompt}")
-            
-            # Generate image
-            response = await client.images.generate(
-                model="dall-e-3",
-                prompt=prompt,
-                size="1024x1024",
-                quality="standard",
-                n=1
-            )
-            
-            # Extract the image URL
-            if response.data and len(response.data) > 0:
-                image_url = response.data[0].url
-                images.append(image_url)
-                logger.info(f"Generated image #{i+1} for '{item_name}'")
-            
-        except Exception as e:
-            logger.error(f"Error generating image #{i+1} for '{item_name}': {str(e)}")
-            # Continue trying to generate other images
-            continue
+    try:
+        # Create a structured prompt for consistent, high-quality food images
+        prompt = f"High-resolution, photorealistic image of {item_name}, plated on a clean white plate, viewed at a 45-degree angle under natural lighting, realistic background, food magazine style"
+        
+        # Add description context if available
+        if description:
+            prompt += f". The dish contains: {description}"
+        
+        logger.debug(f"DALL-E prompt: {prompt}")
+        
+        # Generate image
+        # Note: DALL-E 3 only supports specific sizes, using 1024x1024 as the smallest
+        response = await client.images.generate(
+            model="dall-e-3",
+            prompt=prompt,
+            size="1024x1024",  # Smallest available size for DALL-E 3
+            quality="standard",  # Use standard quality to reduce costs
+            n=1
+        )
+        
+        # Extract the image URL
+        if response.data and len(response.data) > 0:
+            image_url = response.data[0].url
+            images.append(image_url)
+            logger.info(f"Generated image for '{item_name}'")
+        
+    except Exception as e:
+        logger.error(f"Error generating image for '{item_name}': {str(e)}")
     
     return images
 
-async def generate_images_batch(items: List[Dict[str, str]], limit_per_item: int = 2) -> Dict[str, List[str]]:
+async def generate_images_batch(items: List[Dict[str, str]], limit_per_item: int = 1) -> Dict[str, List[str]]:
     """Generate images for multiple menu items concurrently"""
     
     async def generate_with_id(item_id: str, item_name: str, description: Optional[str] = None):
