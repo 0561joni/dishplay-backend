@@ -27,6 +27,10 @@ DALLE2_MAX_PER_MIN = 50
 # Retry configuration
 MAX_RETRIES = 3
 INITIAL_RETRY_DELAY = 2.0  # seconds - start with 2s for Cloudflare rate limits
+CLOUDFLARE_RETRY_DELAY = 10.0  # seconds - longer delay for Cloudflare 1015 errors
+
+# Global semaphore to serialize API requests
+api_semaphore = asyncio.Semaphore(1)
 
 class RateLimiter:
     """Simple rate limiter for API calls"""
@@ -147,8 +151,13 @@ async def generate_with_dalle3(item_name: str, description: Optional[str] = None
     if description:
         prompt += f". The dish contains: {description}"
     
-    # Wait for rate limit
-    await dalle3_limiter.wait_if_needed()
+    # Serialize API requests using semaphore
+    async with api_semaphore:
+        # Wait for rate limit
+        await dalle3_limiter.wait_if_needed()
+        
+        # Add small delay between requests to avoid bursts
+        await asyncio.sleep(0.5)
     
     for attempt in range(MAX_RETRIES):
         try:
@@ -170,13 +179,16 @@ async def generate_with_dalle3(item_name: str, description: Optional[str] = None
             logger.error(f"Error generating with DALL-E 3 (attempt {attempt + 1}): {error_str}")
             
             # Check for Cloudflare error 1015 (rate limit)
-            is_cloudflare_error = "1015" in error_str or "cloudflare" in error_str.lower()
+            is_cloudflare_error = "1015" in error_str or "cloudflare" in error_str.lower() or "rate limit" in error_str.lower()
             
             if attempt < MAX_RETRIES - 1:
-                # Use exponential backoff: 2, 4, 8 seconds
-                backoff_time = INITIAL_RETRY_DELAY * (2 ** attempt)
                 if is_cloudflare_error:
+                    # Use longer delay for Cloudflare rate limits: 10, 20, 30 seconds
+                    backoff_time = CLOUDFLARE_RETRY_DELAY * (attempt + 1)
                     logger.info(f"Cloudflare rate limit detected, waiting {backoff_time}s before retry")
+                else:
+                    # Use exponential backoff for other errors: 2, 4, 8 seconds
+                    backoff_time = INITIAL_RETRY_DELAY * (2 ** attempt)
                 await asyncio.sleep(backoff_time)
                 continue
             
@@ -191,8 +203,13 @@ async def generate_with_dalle2(item_name: str, description: Optional[str] = None
         # DALL-E 2 works better with shorter prompts
         prompt = f"{item_name}, {description[:50]}, food photography"
     
-    # Wait for rate limit
-    await dalle2_limiter.wait_if_needed()
+    # Serialize API requests using semaphore
+    async with api_semaphore:
+        # Wait for rate limit
+        await dalle2_limiter.wait_if_needed()
+        
+        # Add small delay between requests to avoid bursts
+        await asyncio.sleep(0.5)
     
     for attempt in range(MAX_RETRIES):
         try:
@@ -213,13 +230,16 @@ async def generate_with_dalle2(item_name: str, description: Optional[str] = None
             logger.error(f"Error generating with DALL-E 2 (attempt {attempt + 1}): {error_str}")
             
             # Check for Cloudflare error 1015 (rate limit)
-            is_cloudflare_error = "1015" in error_str or "cloudflare" in error_str.lower()
+            is_cloudflare_error = "1015" in error_str or "cloudflare" in error_str.lower() or "rate limit" in error_str.lower()
             
             if attempt < MAX_RETRIES - 1:
-                # Use exponential backoff: 2, 4, 8 seconds
-                backoff_time = INITIAL_RETRY_DELAY * (2 ** attempt)
                 if is_cloudflare_error:
+                    # Use longer delay for Cloudflare rate limits: 10, 20, 30 seconds
+                    backoff_time = CLOUDFLARE_RETRY_DELAY * (attempt + 1)
                     logger.info(f"Cloudflare rate limit detected, waiting {backoff_time}s before retry")
+                else:
+                    # Use exponential backoff for other errors: 2, 4, 8 seconds
+                    backoff_time = INITIAL_RETRY_DELAY * (2 ** attempt)
                 await asyncio.sleep(backoff_time)
                 continue
             
@@ -332,11 +352,15 @@ async def generate_images_batch(items: List[Dict[str, str]], limit_per_item: int
         )
         tasks.append((item['id'], task))
     
-    # Execute all tasks concurrently
-    generation_results = await asyncio.gather(
-        *[task for _, task in tasks],
-        return_exceptions=True
-    )
+    # Execute tasks sequentially to avoid overwhelming the API
+    generation_results = []
+    for item_id, task in tasks:
+        try:
+            result = await task
+            generation_results.append(result)
+        except Exception as e:
+            logger.error(f"Error generating image for item {item_id}: {e}")
+            generation_results.append(e)
     
     # Process results
     for i, (item_id, _) in enumerate(tasks):
