@@ -21,12 +21,12 @@ client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 MENU_IMAGES_BUCKET = os.getenv("SUPABASE_BUCKET_MENU_IMAGES", "menu-images")
 
 # Rate limits
-DALLE3_MAX_PER_MIN = 1  # Only use DALL-E 3 for the first image
+DALLE3_MAX_PER_MIN = 7  # Use DALL-E 3 for the first 7 images
 DALLE2_MAX_PER_MIN = 50
 
 # Retry configuration
 MAX_RETRIES = 3
-INITIAL_RETRY_DELAY = 1.0  # seconds
+INITIAL_RETRY_DELAY = 2.0  # seconds - start with 2s for Cloudflare rate limits
 
 class RateLimiter:
     """Simple rate limiter for API calls"""
@@ -166,9 +166,18 @@ async def generate_with_dalle3(item_name: str, description: Optional[str] = None
                 return response.data[0].url, "dalle-3"
             
         except Exception as e:
-            logger.error(f"Error generating with DALL-E 3 (attempt {attempt + 1}): {str(e)}")
+            error_str = str(e)
+            logger.error(f"Error generating with DALL-E 3 (attempt {attempt + 1}): {error_str}")
+            
+            # Check for Cloudflare error 1015 (rate limit)
+            is_cloudflare_error = "1015" in error_str or "cloudflare" in error_str.lower()
+            
             if attempt < MAX_RETRIES - 1:
-                await asyncio.sleep(INITIAL_RETRY_DELAY * (2 ** attempt))
+                # Use exponential backoff: 2, 4, 8 seconds
+                backoff_time = INITIAL_RETRY_DELAY * (2 ** attempt)
+                if is_cloudflare_error:
+                    logger.info(f"Cloudflare rate limit detected, waiting {backoff_time}s before retry")
+                await asyncio.sleep(backoff_time)
                 continue
             
     return None
@@ -200,9 +209,18 @@ async def generate_with_dalle2(item_name: str, description: Optional[str] = None
                 return response.data[0].url, "dalle-2"
             
         except Exception as e:
-            logger.error(f"Error generating with DALL-E 2 (attempt {attempt + 1}): {str(e)}")
+            error_str = str(e)
+            logger.error(f"Error generating with DALL-E 2 (attempt {attempt + 1}): {error_str}")
+            
+            # Check for Cloudflare error 1015 (rate limit)
+            is_cloudflare_error = "1015" in error_str or "cloudflare" in error_str.lower()
+            
             if attempt < MAX_RETRIES - 1:
-                await asyncio.sleep(INITIAL_RETRY_DELAY * (2 ** attempt))
+                # Use exponential backoff: 2, 4, 8 seconds
+                backoff_time = INITIAL_RETRY_DELAY * (2 ** attempt)
+                if is_cloudflare_error:
+                    logger.info(f"Cloudflare rate limit detected, waiting {backoff_time}s before retry")
+                await asyncio.sleep(backoff_time)
                 continue
             
     return None
