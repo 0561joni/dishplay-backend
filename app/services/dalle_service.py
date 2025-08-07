@@ -10,7 +10,6 @@ from slugify import slugify
 from app.core.supabase_client import get_supabase_client
 import time
 from datetime import datetime
-import hashlib
 
 logger = logging.getLogger(__name__)
 
@@ -117,9 +116,9 @@ def generate_filename(item_name: str, description: Optional[str] = None) -> str:
     base_name = slugify(item_name)
     
     if description:
-        # Create a short hash of the description to make filename unique
-        desc_hash = hashlib.md5(description.encode()).hexdigest()[:8]
-        return f"{base_name}-{desc_hash}.jpg"
+        # Use the description directly without hash
+        desc_slug = slugify(description)
+        return f"{base_name}-{desc_slug}.jpg"
     else:
         return f"{base_name}.jpg"
 
