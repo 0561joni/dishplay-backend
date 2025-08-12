@@ -59,20 +59,6 @@ async def lifespan(app: FastAPI):
     
     logger.info("All required environment variables are present")
     
-    """# Test Supabase connection
-    try:
-        # Simple health check query
-        client = get_supabase_client()
-        response = client.table("users").select("id").limit(1).execute()
-        # Check if response has data (indicating successful connection)
-        if hasattr(response, 'data'):
-            logger.info("Successfully connected to Supabase")
-        else:
-            logger.warning("Supabase connection test returned unexpected response format")
-    except Exception as e:
-        logger.error(f"Failed to connect to Supabase: {str(e)}")
-        raise RuntimeError(f"Failed to connect to Supabase: {str(e)}")
-    """
     # Start cache cleanup task
     cleanup_task = asyncio.create_task(cache_cleanup_task())
     logger.info("Started cache cleanup task")

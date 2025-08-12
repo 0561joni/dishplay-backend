@@ -233,14 +233,14 @@ async def upload_menu(
                     if image_url:
                         image_urls.append(image_url)
                         
-                        # Skip database insert for cached images
-                        if model_used != "cached":
-                            all_image_records.append({
-                                "menu_item_id": menu_item_id,
-                                "image_url": image_url,
-                                "source": model_used,  # "dalle-3", "dalle-2", or "mock"
-                                "is_primary": j == 0
-                            })
+                        # Always store the image association in the database
+                        # Even for cached images, we need to associate them with this menu item
+                        all_image_records.append({
+                            "menu_item_id": menu_item_id,
+                            "image_url": image_url,
+                            "source": model_used,  # "dalle-3", "dalle-2", "cached", or "mock"
+                            "is_primary": j == 0
+                        })
             
             # If no images were generated, use fallback placeholder
             if not image_urls:
@@ -354,7 +354,15 @@ async def get_menu(
         # Transform the data
         items = []
         for item in menu_data.get("menu_items", []):
-            images = [img["image_url"] for img in item.get("item_images", [])]
+            item_images = item.get("item_images", [])
+            images = [img["image_url"] for img in item_images]
+            
+            # Log image retrieval for debugging
+            if item_images:
+                logger.info(f"Retrieved {len(item_images)} image(s) for item '{item['item_name']}': {images}")
+            else:
+                logger.warning(f"No images found in database for item '{item['item_name']}'")
+            
             items.append({
                 "id": item["id"],
                 "name": item["item_name"],

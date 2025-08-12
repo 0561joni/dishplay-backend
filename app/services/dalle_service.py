@@ -123,23 +123,49 @@ def generate_filename(item_name: str, description: Optional[str] = None) -> str:
         return f"{base_name}.jpg"
 
 async def check_existing_image(item_name: str, description: Optional[str] = None) -> Optional[str]:
-    """Check if image already exists in Supabase storage"""
+    """Check if image already exists in database or Supabase storage"""
     try:
         supabase = get_supabase_client()
+        
+        # Generate the filename we would use for this item
         filename = generate_filename(item_name, description)
         file_path = f"generated/{filename}"
         
-        # List files in the generated directory
-        existing_files = supabase.storage.from_(MENU_IMAGES_BUCKET).list(path="generated/")
-        
-        if any(file['name'] == filename for file in existing_files):
-            logger.info(f"Image already exists for '{item_name}', returning cached URL")
+        # First check if this exact file exists in storage
+        try:
+            # Try to get the public URL directly - if the file exists, this will work
             public_url = supabase.storage.from_(MENU_IMAGES_BUCKET).get_public_url(file_path)
-            logger.info(f"Cached public URL: {public_url}")
-            return public_url
+            
+            # Verify the file actually exists by checking the list
+            existing_files = supabase.storage.from_(MENU_IMAGES_BUCKET).list(path="generated/")
+            
+            if any(file['name'] == filename for file in existing_files):
+                logger.info(f"Found exact match in storage for '{item_name}' with filename '{filename}', returning cached URL")
+                logger.info(f"Cached storage URL: {public_url}")
+                return public_url
+            
+        except Exception as storage_error:
+            logger.debug(f"Storage check error: {storage_error}")
+        
+        # If exact match not found, check database for any existing image for this item name
+        # This handles cases where the item was previously generated with slightly different description
+        try:
+            # Create a search pattern based on the base item name
+            search_pattern = slugify(item_name)
+            
+            # Look for any images that match this item name pattern
+            response = supabase.table("item_images").select("image_url").ilike("image_url", f"%{search_pattern}%").limit(1).execute()
+            
+            if response.data and len(response.data) > 0:
+                existing_url = response.data[0]["image_url"]
+                logger.info(f"Found similar image in database for '{item_name}', reusing cached URL: {existing_url}")
+                return existing_url
+                
+        except Exception as db_error:
+            logger.debug(f"Database check failed: {db_error}")
             
     except Exception as e:
-        logger.debug(f"Error checking existing image: {e}")
+        logger.error(f"Error checking existing image: {e}")
     
     return None
 
@@ -312,12 +338,15 @@ async def generate_images_batch(items: List[Dict[str, str]], limit_per_item: int
         item_name = item['name']
         description = item.get('description')
         
+        logger.info(f"Checking cache for item: {item_name} (description: {description[:50] if description else 'None'})")
+        
         # Check cache first with description
         existing_url = await check_existing_image(item_name, description)
         if existing_url:
             results[item_id] = [(existing_url, "cached")]
-            logger.info(f"Using cached image for '{item_name}'")
+            logger.info(f"✓ Using cached image for '{item_name}' - URL: {existing_url}")
         else:
+            logger.info(f"✗ No cached image found for '{item_name}', will generate new image")
             items_to_generate.append(item)
     
     if not items_to_generate:
