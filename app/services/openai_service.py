@@ -24,6 +24,18 @@ For each menu item, extract:
 3. price: The numerical price without currency symbols (optional, as float)
 4. original_price_text: The original price text as it appears on the menu (optional)
 
+IMPORTANT - Handling dishes with multiple options:
+Many dishes come with different protein or ingredient options (like fish, tofu, chicken, beef, etc.).
+When you see a dish with multiple options:
+- Create a SEPARATE ITEM for each option
+- Format the name as: "Main Dish Name - Option"
+- Example: If "Pad Thai" has options for chicken, tofu, and shrimp:
+  - "Pad Thai - Chicken" (with chicken price)
+  - "Pad Thai - Tofu" (with tofu price)  
+  - "Pad Thai - Shrimp" (with shrimp price)
+- Include option-specific details in the description
+- Options can be marked with letters (A, B, C), numbers (1, 2, 3), bullets, or just listed - handle all formats
+
 Also extract:
 - restaurant_name: Restaurant name if visible
 - currency_info: Any currency symbols, codes, or hints you can identify
@@ -39,8 +51,8 @@ Return the data as a JSON object with this structure:
     },
     "items": [
         {
-            "name": "Dish Name",
-            "description": "Description if available",
+            "name": "Dish Name - Option",
+            "description": "Description including option details",
             "price": 12.99,
             "original_price_text": "$12.99"
         }
@@ -48,7 +60,8 @@ Return the data as a JSON object with this structure:
 }
 
 Important:
-- Extract ALL visible menu items
+- Extract ALL visible menu items including ALL variations/options as separate items
+- Each option of a dish should be its own item with its own price
 - For prices, extract only the number (e.g., 12.99 not $12.99) but preserve original text
 - Include any currency symbols you see (e.g., $, €, £, ¥, ₹)
 - Note any location information that might indicate currency region
