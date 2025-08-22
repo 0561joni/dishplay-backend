@@ -18,11 +18,13 @@ GOOGLE_CSE_ID = os.getenv("GOOGLE_CSE_ID")
 
 # High-quality food sites for better image results
 FOOD_DOMAINS = [
+    "wolt.com",  # Food delivery platform with restaurant photos - prioritized
     "seriouseats.com", "bonappetit.com", "epicurious.com", "bbcgoodfood.com",
     "allrecipes.com", "foodnetwork.com", "tasteatlas.com", "justonecookbook.com",
     "thespruceeats.com", "foodgawker.com", "delish.com", "food52.com",
     "thekitchn.com", "simplyrecipes.com", "cookinglight.com", "eatingwell.com",
-    "foodandwine.com", "saveur.com", "finecooking.com", "myrecipes.com"
+    "foodandwine.com", "saveur.com", "finecooking.com", "myrecipes.com",
+    "ubereats.com", "doordash.com", "grubhub.com"  # Other delivery platforms
 ]
 
 # User agent for fetching images

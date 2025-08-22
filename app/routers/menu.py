@@ -213,7 +213,7 @@ async def upload_menu(
             search_start = datetime.utcnow()
             
             # Call the Google search batch function
-            image_results = await search_images_batch(items_for_generation, limit_per_item=2)
+            image_results = await search_images_batch(items_for_generation, limit_per_item=3)
             
             search_time = (datetime.utcnow() - search_start).total_seconds()
             logger.info(f"Batch image search completed in {search_time:.2f}s")
