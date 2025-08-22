@@ -36,10 +36,15 @@ NEGATIVE_SWEET_TERMS = {
     "pastry", "cupcake", "donut", "muffin"
 }
 
-# Generic negative terms to avoid stock photos
+# Generic negative terms to avoid stock photos and non-food items
 NEGATIVE_GENERIC_TERMS = {
     "logo", "vector", "illustration", "clipart", "packaging", 
-    "stock", "getty", "shutterstock", "alamy", "cartoon", "drawing"
+    "stock", "getty", "shutterstock", "alamy", "cartoon", "drawing",
+    "menu", "text", "writing", "sign", "board", "blackboard",
+    "face", "person", "people", "chef", "waiter", "customer",
+    "restaurant interior", "kitchen", "dining room", "table setting",
+    "cutlery", "napkin", "tablecloth", "candle", "flower", "vase",
+    "book", "magazine", "flyer", "brochure", "poster", "advertisement"
 }
 
 def normalize_menu_item(raw_name: str) -> Tuple[str, List[str]]:
@@ -115,16 +120,19 @@ def build_search_query(core: str, modifiers: List[str], description: str = None,
     # Add negative terms to exclude unwanted results
     if use_negatives:
         # Check if item is likely savory
-        is_savory = not any(sweet in core for sweet in ["cake", "dessert", "ice cream", "chocolate"])
+        is_savory = not any(sweet in core for sweet in ["cake", "dessert", "ice cream", "chocolate", "cookie", "brownie"])
         
         if is_savory:
             # Exclude dessert terms for savory items
-            for term in list(NEGATIVE_SWEET_TERMS)[:3]:  # Limit negatives
-                parts.append(f'-"{term}"')
+            for term in ["dessert", "cake", "sweet"]:
+                parts.append(f'-{term}')
         
-        # Always exclude generic stock photo terms
-        for term in list(NEGATIVE_GENERIC_TERMS)[:3]:
-            parts.append(f'-{term}')
+        # Priority negative terms - always exclude these
+        priority_negatives = [
+            "-menu", "-text", "-face", "-person", "-chef",
+            "-logo", "-cartoon", "-illustration"
+        ]
+        parts.extend(priority_negatives)
     
     return " ".join(parts)
 
@@ -186,8 +194,17 @@ def is_relevant_image(item: Dict, core_keywords: Set[str], is_savory: bool = Tru
         if any(sweet_term in all_text for sweet_term in NEGATIVE_SWEET_TERMS):
             return False
     
-    # Avoid obvious stock photos
-    if any(generic in all_text for generic in ["stock photo", "clipart", "vector"]):
+    # Avoid obvious non-food content
+    unwanted_terms = [
+        "stock photo", "clipart", "vector", "menu", "price list",
+        "restaurant sign", "chef portrait", "kitchen staff", "dining room",
+        "table setting", "cutlery", "advertisement", "flyer", "brochure"
+    ]
+    if any(term in all_text for term in unwanted_terms):
+        return False
+    
+    # Additional check for faces/people in URLs or titles
+    if any(term in all_text for term in ["face", "person", "people", "chef", "waiter"]):
         return False
     
     return True
