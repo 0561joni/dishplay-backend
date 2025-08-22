@@ -10,6 +10,12 @@ from urllib.parse import urlparse
 from io import BytesIO
 from PIL import Image
 
+from app.services.image_cache_service import (
+    search_cached_images, 
+    download_and_store_image,
+    cache_images_batch
+)
+
 logger = logging.getLogger(__name__)
 
 # Google API credentials from environment variables
@@ -270,12 +276,30 @@ async def validate_image_bytes(image_bytes: bytes) -> bool:
         return False
 
 async def search_images_for_item(name: str, description: str = None, 
-                                limit: int = 2) -> List[str]:
+                                limit: int = 3, use_cache: bool = True) -> List[str]:
     """Search for high-quality food images for a menu item"""
+    
+    # First, check cache if enabled
+    if use_cache:
+        cached_images = await search_cached_images(name, description, limit)
+        if cached_images and len(cached_images) >= limit:
+            logger.info(f"Using {len(cached_images)} cached images for '{name}'")
+            return cached_images
+        
+        # If we have some cached images but not enough, reduce the search limit
+        if cached_images:
+            logger.info(f"Found {len(cached_images)} cached images, searching for {limit - len(cached_images)} more")
+            search_limit = limit - len(cached_images)
+        else:
+            cached_images = []
+            search_limit = limit
+    else:
+        cached_images = []
+        search_limit = limit
     
     if not GOOGLE_CSE_API_KEY or not GOOGLE_CSE_ID:
         logger.error("Google CSE credentials not configured")
-        return []
+        return cached_images  # Return what we have from cache
     
     # Normalize the menu item name
     core, modifiers = normalize_menu_item(name)
@@ -295,43 +319,43 @@ async def search_images_for_item(name: str, description: str = None,
     seen_pages = set()
     results = []
     
-    # Strategy 1: Search specific food sites with strict query
-    strict_query = build_search_query(core, modifiers, description, add_context=True, use_negatives=True)
+    # Strategy 1: Search with domain restrictions in a single query
+    # Build site restriction for multiple domains
+    site_restrict = " OR ".join([f"site:{domain}" for domain in FOOD_DOMAINS[:5]])  # Top 5 domains
+    strict_query = f"{build_search_query(core, modifiers, description, add_context=True, use_negatives=True)} ({site_restrict})"
     
-    for domain in FOOD_DOMAINS[:8]:  # Try top food sites
+    # Single API call to search across multiple domains
+    items = await cse_image_search(strict_query, domain=None, num=min(limit * 2, 10))  # Get extra to filter
+    
+    for item in items:
         if len(results) >= limit:
             break
             
-        items = await cse_image_search(strict_query, domain=domain, num=2)
+        link = item.get("link", "")
+        context_link = item.get("image", {}).get("contextLink", "")
         
-        for item in items:
-            if len(results) >= limit:
-                break
-                
-            link = item.get("link", "")
-            context_link = item.get("image", {}).get("contextLink", "")
-            
-            # Skip duplicates
-            canonical_url = canonical_image_url(link)
-            if canonical_url in seen_images or context_link in seen_pages:
-                continue
-            
-            # Check relevance
-            if not is_relevant_image(item, core_keywords, is_savory):
-                continue
-            
-            # Mark as seen and add to results
-            seen_images.add(canonical_url)
-            seen_pages.add(context_link)
-            results.append(link)
-            logger.debug(f"Found image from {domain}: {link}")
+        # Skip duplicates
+        canonical_url = canonical_image_url(link)
+        if canonical_url in seen_images or context_link in seen_pages:
+            continue
+        
+        # Check relevance
+        if not is_relevant_image(item, core_keywords, is_savory):
+            continue
+        
+        # Mark as seen and add to results
+        seen_images.add(canonical_url)
+        seen_pages.add(context_link)
+        results.append(link)
+        logger.debug(f"Found image: {link}")
     
-    # Strategy 2: If not enough results, try broader search
+    # Strategy 2: If not enough results, try broader search (only if really needed)
     if len(results) < limit:
+        remaining_needed = limit - len(results)
         looser_query = build_search_query(core, modifiers[:1], description, add_context=False, use_negatives=False)
         
-        # Search without domain restriction
-        items = await cse_image_search(looser_query, num=10)
+        # Search without domain restriction - only get what we need
+        items = await cse_image_search(looser_query, num=min(remaining_needed * 2, 10))
         
         for item in items:
             if len(results) >= limit:
@@ -361,8 +385,28 @@ async def search_images_for_item(name: str, description: str = None,
             results.append(link)
             logger.debug(f"Found image (broader search): {link}")
     
-    logger.info(f"Found {len(results)} images for '{name}'")
-    return results
+    logger.info(f"Found {len(results)} new images for '{name}'")
+    
+    # Cache the newly found images asynchronously (don't wait)
+    if results and use_cache:
+        # Fire and forget - cache in background
+        asyncio.create_task(cache_new_images(results[:search_limit], name, description))
+    
+    # Combine cached images with new results
+    final_results = cached_images + results[:search_limit]
+    
+    logger.info(f"Returning {len(final_results)} total images for '{name}' ({len(cached_images)} cached, {len(results[:search_limit])} new)")
+    return final_results[:limit]  # Ensure we don't exceed the limit
+
+
+async def cache_new_images(image_urls: List[str], item_name: str, item_description: str = None):
+    """Cache newly found images in the background"""
+    try:
+        for url in image_urls:
+            await download_and_store_image(url, item_name, item_description)
+    except Exception as e:
+        logger.error(f"Error caching images: {str(e)}")
+        # Don't fail the main request if caching fails
 
 async def search_images_batch(items: List[Dict[str, str]], limit_per_item: int = 2) -> Dict[str, List[Tuple[str, str]]]:
     """Search images for multiple menu items concurrently"""
