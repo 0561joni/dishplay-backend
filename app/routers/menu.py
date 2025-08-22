@@ -11,7 +11,8 @@ import json
 from app.core.auth import get_current_user, verify_user_credits, deduct_user_credits
 from app.services.image_processor import process_and_optimize_image, validate_image_file
 from app.services.openai_service import extract_menu_items
-from app.services.dalle_service import generate_images_batch, get_fallback_image
+from app.services.google_search_service import search_images_batch
+from app.services.dalle_service import get_fallback_image
 from app.core.async_supabase import async_supabase_client
 from app.models.menu import MenuResponse, MenuItem
 from app.services.progress_tracker import progress_tracker
@@ -206,17 +207,17 @@ async def upload_menu(
                     'description': description
                 })
             
-            # Execute batch image generation with intelligent model selection
-            logger.info(f"Starting batch image generation for {len(items_for_generation)} items")
-            await progress_tracker.update_progress(menu_id, "generating_images", 55)
-            generation_start = datetime.utcnow()
+            # Execute batch image search using Google CSE
+            logger.info(f"Starting batch image search for {len(items_for_generation)} items")
+            await progress_tracker.update_progress(menu_id, "searching_images", 55)
+            search_start = datetime.utcnow()
             
-            # Call the new batch generation function
-            image_results = await generate_images_batch(items_for_generation)
+            # Call the Google search batch function
+            image_results = await search_images_batch(items_for_generation, limit_per_item=2)
             
-            generation_time = (datetime.utcnow() - generation_start).total_seconds()
-            logger.info(f"Batch image generation completed in {generation_time:.2f}s")
-            await progress_tracker.update_progress(menu_id, "images_generated", 85)
+            search_time = (datetime.utcnow() - search_start).total_seconds()
+            logger.info(f"Batch image search completed in {search_time:.2f}s")
+            await progress_tracker.update_progress(menu_id, "images_found", 85)
         
         # Process results and prepare image records
         all_image_records = []
@@ -238,7 +239,7 @@ async def upload_menu(
                         all_image_records.append({
                             "menu_item_id": menu_item_id,
                             "image_url": image_url,
-                            "source": model_used,  # "dalle-3", "dalle-2", "cached", or "mock"
+                            "source": model_used,  # "google_cse" or "mock"
                             "is_primary": j == 0
                         })
             

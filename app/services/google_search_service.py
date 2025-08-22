@@ -1,214 +1,381 @@
 # app/services/google_search_service.py
-import httpx
-import logging
+from googleapiclient.discovery import build
 import os
 import re
-from typing import List, Optional, Dict
+import logging
 import asyncio
-from urllib.parse import quote
+import aiohttp
+from typing import List, Optional, Dict, Tuple, Set
+from urllib.parse import urlparse
+from io import BytesIO
+from PIL import Image
 
 logger = logging.getLogger(__name__)
 
+# Google API credentials from environment variables
 GOOGLE_CSE_API_KEY = os.getenv("GOOGLE_CSE_API_KEY")
 GOOGLE_CSE_ID = os.getenv("GOOGLE_CSE_ID")
-GOOGLE_SEARCH_URL = "https://www.googleapis.com/customsearch/v1"
 
-# Allowed image hosting sites for food photos
-ALLOWED_SITES = [
-    "pixabay.com",
-    "unsplash.com", 
-    "pexels.com",
-    "burst.shopify.com",
-    "freefoodphotos.com",
-    "stocksnap.io",
-    "foodiesfeed.com",
-    "picjumbo.com",
-    "kaboompics.com",
-    "gratisography.com"
+# High-quality food sites for better image results
+FOOD_DOMAINS = [
+    "seriouseats.com", "bonappetit.com", "epicurious.com", "bbcgoodfood.com",
+    "allrecipes.com", "foodnetwork.com", "tasteatlas.com", "justonecookbook.com",
+    "thespruceeats.com", "foodgawker.com", "delish.com", "food52.com",
+    "thekitchn.com", "simplyrecipes.com", "cookinglight.com", "eatingwell.com",
+    "foodandwine.com", "saveur.com", "finecooking.com", "myrecipes.com"
 ]
 
-def extract_first_sentence(text: str) -> str:
-    """Extract the first sentence from a text description"""
-    if not text or not text.strip():
-        return ""
-    
-    # Clean up the text
-    text = text.strip()
-    
-    # Split by common sentence endings
-    sentence_endings = r'[.!?](?:\s|$)'
-    sentences = re.split(sentence_endings, text)
-    
-    if sentences and sentences[0]:
-        first_sentence = sentences[0].strip()
-        # Limit length to avoid overly long queries (max 100 chars)
-        if len(first_sentence) > 100:
-            first_sentence = first_sentence[:100].rsplit(' ', 1)[0]  # Break at word boundary
-        return first_sentence
-    
-    # Fallback to first 50 characters if no sentence structure found
-    return text[:50].rsplit(' ', 1)[0] if len(text) > 50 else text
+# User agent for fetching images
+USER_AGENT = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+              "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
 
-async def search_images_for_item(query: str, limit: int = 2) -> List[str]:
-    """Search for images using Google Custom Search API"""
+# Terms to exclude for savory dishes
+NEGATIVE_SWEET_TERMS = {
+    "dessert", "tart", "pie", "cake", "brownie", "cookie", "pudding", 
+    "fruit", "sweet", "mousse", "cheesecake", "galette", "cobbler", 
+    "pastry", "cupcake", "donut", "muffin"
+}
+
+# Generic negative terms to avoid stock photos
+NEGATIVE_GENERIC_TERMS = {
+    "logo", "vector", "illustration", "clipart", "packaging", 
+    "stock", "getty", "shutterstock", "alamy", "cartoon", "drawing"
+}
+
+def normalize_menu_item(raw_name: str) -> Tuple[str, List[str]]:
+    """Normalize menu item name and extract modifiers for better search"""
+    # Clean up the text
+    s = raw_name.strip().lower().replace("_", " ").replace("-", " ")
     
+    # Remove measurements and prices
+    s = re.sub(r"\b\d+(?:\.\d+)?\s?(?:g|kg|oz|ml|l|cm|mm|in|inch|€|\$|£)\b", " ", s)
+    s = re.sub(r"[(),/{}]", " ", s)
+    s = re.sub(r"\s+", " ", s).strip()
+    
+    tokens = s.split()
+    
+    # Identify core item (simplified logic)
+    core = tokens[0] if tokens else "food"
+    
+    # Handle special cases
+    if "burger" in tokens or "cheeseburger" in tokens or "hamburger" in tokens:
+        if "cheese" in tokens or "cheeseburger" in tokens:
+            core = "cheeseburger"
+        elif "hamburger" in tokens:
+            core = "hamburger"
+        else:
+            core = "burger"
+    elif "pizza" in tokens:
+        core = "pizza"
+    elif "pasta" in tokens or "spaghetti" in tokens or "penne" in tokens:
+        core = "pasta"
+    elif "salad" in tokens:
+        core = "salad"
+    elif "soup" in tokens:
+        core = "soup"
+    elif "sandwich" in tokens:
+        core = "sandwich"
+    
+    # Extract modifiers (descriptive words)
+    stop_words = {core, "with", "and", "the", "a", "an", "of", "in", "on"}
+    modifiers = [t for t in tokens if t not in stop_words]
+    
+    # Prioritize important food descriptors
+    priority = {
+        "beef": 3, "chicken": 3, "pork": 3, "fish": 3, "seafood": 3,
+        "grilled": 2, "fried": 2, "baked": 2, "roasted": 2, "steamed": 2,
+        "cheese": 2, "tomato": 1, "onion": 1, "lettuce": 1, "mushroom": 1
+    }
+    modifiers = sorted(modifiers, key=lambda t: priority.get(t, 0), reverse=True)[:3]
+    
+    return core, modifiers
+
+def build_search_query(core: str, modifiers: List[str], description: str = None, 
+                       add_context: bool = True, use_negatives: bool = True) -> str:
+    """Build optimized search query for Google CSE"""
+    parts = [core]
+    
+    # Add modifiers
+    if modifiers:
+        parts.extend(modifiers[:2])  # Limit to 2 modifiers to avoid over-specification
+    
+    # Add description keywords if available
+    if description:
+        # Extract key words from description
+        desc_lower = description.lower()
+        for word in ["grilled", "fried", "baked", "roasted", "fresh", "creamy", "spicy"]:
+            if word in desc_lower and word not in parts:
+                parts.append(word)
+                break
+    
+    # Add context for better food photos
+    if add_context:
+        parts.extend(['"restaurant"', '"plated"', '"food photography"'])
+    
+    # Add negative terms to exclude unwanted results
+    if use_negatives:
+        # Check if item is likely savory
+        is_savory = not any(sweet in core for sweet in ["cake", "dessert", "ice cream", "chocolate"])
+        
+        if is_savory:
+            # Exclude dessert terms for savory items
+            for term in list(NEGATIVE_SWEET_TERMS)[:3]:  # Limit negatives
+                parts.append(f'-"{term}"')
+        
+        # Always exclude generic stock photo terms
+        for term in list(NEGATIVE_GENERIC_TERMS)[:3]:
+            parts.append(f'-{term}')
+    
+    return " ".join(parts)
+
+async def cse_image_search(query: str, domain: str = None, num: int = 3, 
+                          img_type: str = "photo", safe: str = "active") -> List[Dict]:
+    """Search images using Google Custom Search API"""
     if not GOOGLE_CSE_API_KEY or not GOOGLE_CSE_ID:
         logger.error("Google CSE credentials not configured")
         return []
     
     try:
-        async with httpx.AsyncClient() as client:
-            # Create site restriction query
-            site_restrictions = " OR ".join([f"site:{site}" for site in ALLOWED_SITES])
-            restricted_query = f"{query} ({site_restrictions})"
-            
-            params = {
-                "key": GOOGLE_CSE_API_KEY,
-                "cx": GOOGLE_CSE_ID,
-                "q": restricted_query,
-                "searchType": "image",
-                "num": min(limit, 10),  # Google CSE allows max 10 results per request
-                "safe": "active",
-                "imgType": "photo",
-                "imgSize": "large"
-            }
-            
-            logger.info(f"Searching images for: {query}")
-            logger.debug(f"Site-restricted query: {restricted_query}")
-            
-            response = await client.get(GOOGLE_SEARCH_URL, params=params, timeout=10.0)
-            
-            if response.status_code != 200:
-                logger.error(f"Google CSE API error: {response.status_code} - {response.text}")
-                return []
-            
-            data = response.json()
-            
-            # Extract image URLs
-            image_urls = []
-            items = data.get("items", [])
-            
-            for item in items[:limit]:
-                # Try to get the direct image link
-                image_url = item.get("link")
-                
-                # Validate image URL
-                if image_url and is_valid_image_url(image_url):
-                    image_urls.append(image_url)
-                
-                # Stop when we have enough images
-                if len(image_urls) >= limit:
-                    break
-            
-            # Log statistics about which sites were used
-            if image_urls:
-                site_counts = {}
-                for url in image_urls:
-                    for site in ALLOWED_SITES:
-                        if site in url.lower():
-                            site_counts[site] = site_counts.get(site, 0) + 1
-                            break
-                
-                if site_counts:
-                    logger.info(f"Found {len(image_urls)} images for '{query}' from sites: {site_counts}")
-                else:
-                    logger.info(f"Found {len(image_urls)} images for '{query}' (from CDNs)")
-            else:
-                logger.warning(f"No valid images found for query: {query}")
-            
-            return image_urls
-            
-    except httpx.TimeoutException:
-        logger.error(f"Timeout searching images for: {query}")
-        return []
+        # Build service synchronously (googleapiclient doesn't support async)
+        service = build("customsearch", "v1", developerKey=GOOGLE_CSE_API_KEY)
+        
+        params = {
+            "q": query,
+            "cx": GOOGLE_CSE_ID,
+            "searchType": "image",
+            "num": min(10, num),
+            "safe": safe,
+            "imgType": img_type,
+            "imgSize": "LARGE"
+        }
+        
+        # Add domain restriction if specified
+        if domain:
+            params["siteSearch"] = domain
+            params["siteSearchFilter"] = "i"
+        
+        # Execute search in thread pool to avoid blocking
+        loop = asyncio.get_event_loop()
+        result = await loop.run_in_executor(
+            None,
+            lambda: service.cse().list(**params).execute()
+        )
+        
+        return result.get("items", [])
+        
     except Exception as e:
-        logger.error(f"Error searching images for '{query}': {str(e)}")
+        logger.error(f"CSE search error for query '{query}': {str(e)}")
         return []
 
-def is_valid_image_url(url: str) -> bool:
-    """Validate if URL is from allowed sites and is likely a valid image URL"""
-    if not url or not url.startswith(("http://", "https://")):
+def is_relevant_image(item: Dict, core_keywords: Set[str], is_savory: bool = True) -> bool:
+    """Check if image result is relevant to the menu item"""
+    title = (item.get("title") or "").lower()
+    snippet = (item.get("snippet") or "").lower()
+    link = (item.get("link") or "").lower()
+    context_link = (item.get("image", {}).get("contextLink", "")).lower()
+    
+    # Combine all text for checking
+    all_text = f"{title} {snippet} {link} {context_link}"
+    
+    # Must contain at least one core keyword
+    if not any(keyword in all_text for keyword in core_keywords):
         return False
     
-    url_lower = url.lower()
+    # For savory items, avoid dessert images
+    if is_savory:
+        if any(sweet_term in all_text for sweet_term in NEGATIVE_SWEET_TERMS):
+            return False
     
-    # First check if the URL is from one of our allowed sites
-    is_from_allowed_site = any(allowed_site in url_lower for allowed_site in ALLOWED_SITES)
-    
-    if not is_from_allowed_site:
-        # Also allow CDN URLs that might serve images for our allowed sites
-        allowed_cdns = [
-            "googleusercontent.com",  # Google's CDN
-            "gstatic.com",           # Google's static content CDN
-            "cloudinary.com",        # Cloudinary CDN
-            "fastly.com",           # Fastly CDN
-            "jsdelivr.net",         # jsDelivr CDN
-            "amazonaws.com",        # AWS S3/CloudFront
-            "cloudflare.com"        # Cloudflare CDN
-        ]
-        
-        is_from_allowed_site = any(cdn in url_lower for cdn in allowed_cdns)
-    
-    if not is_from_allowed_site:
-        logger.debug(f"Rejected URL from unauthorized site: {url}")
+    # Avoid obvious stock photos
+    if any(generic in all_text for generic in ["stock photo", "clipart", "vector"]):
         return False
     
-    # Check for common image extensions
-    image_extensions = (".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp")
-    
-    # Check if URL ends with image extension
-    if any(url_lower.endswith(ext) for ext in image_extensions):
-        return True
-    
-    # Check if URL contains image extension before query parameters
-    for ext in image_extensions:
-        if ext in url_lower.split("?")[0]:
-            return True
-    
-    # For URLs from allowed sites, be more permissive about extensions
-    # as they might use custom URL structures
     return True
 
-async def search_images_batch(items: List[Dict[str, str]], limit_per_item: int = 2) -> Dict[str, List[str]]:
-    """Search images for multiple items concurrently"""
+def canonical_image_url(url: str) -> str:
+    """Create canonical URL for deduplication"""
+    try:
+        parsed = urlparse(url)
+        path = parsed.path.lower()
+        return f"{parsed.netloc.lower()}{path}"
+    except:
+        return url
+
+async def fetch_image_with_fallback(url: str, thumbnail_url: str = None) -> Optional[bytes]:
+    """Fetch image bytes with fallback to thumbnail"""
+    headers_options = [
+        {"User-Agent": USER_AGENT, "Referer": f"https://{urlparse(url).netloc}/"},
+        {"User-Agent": USER_AGENT, "Referer": "https://www.google.com/"},
+        {"User-Agent": USER_AGENT}
+    ]
     
-    async def search_with_id(item_id: str, queries: List[str]):
-        all_images = []
-        images_per_query = max(1, limit_per_item // len(queries))  # Distribute limit across queries
+    async with aiohttp.ClientSession() as session:
+        # Try main URL with different headers
+        for headers in headers_options:
+            try:
+                async with session.get(url, headers=headers, timeout=10) as response:
+                    if response.status == 200:
+                        return await response.read()
+            except:
+                continue
         
-        for query in queries:
-            images = await search_images_for_item(query, images_per_query)
-            all_images.extend(images)
+        # Fallback to thumbnail if available
+        if thumbnail_url:
+            try:
+                async with session.get(
+                    thumbnail_url, 
+                    headers={"User-Agent": USER_AGENT}, 
+                    timeout=10
+                ) as response:
+                    if response.status == 200:
+                        return await response.read()
+            except:
+                pass
+    
+    return None
+
+async def validate_image_bytes(image_bytes: bytes) -> bool:
+    """Validate that bytes represent a valid image"""
+    try:
+        img = Image.open(BytesIO(image_bytes))
+        # Check minimum dimensions
+        width, height = img.size
+        if width < 200 or height < 200:
+            return False
+        # Check aspect ratio (avoid extreme ratios)
+        aspect_ratio = width / height
+        if aspect_ratio < 0.3 or aspect_ratio > 3.0:
+            return False
+        return True
+    except:
+        return False
+
+async def search_images_for_item(name: str, description: str = None, 
+                                limit: int = 2) -> List[str]:
+    """Search for high-quality food images for a menu item"""
+    
+    if not GOOGLE_CSE_API_KEY or not GOOGLE_CSE_ID:
+        logger.error("Google CSE credentials not configured")
+        return []
+    
+    # Normalize the menu item name
+    core, modifiers = normalize_menu_item(name)
+    logger.info(f"Searching images for: {name} (core: {core}, modifiers: {modifiers})")
+    
+    # Determine if item is savory
+    is_savory = not any(sweet in core for sweet in ["cake", "dessert", "ice", "chocolate", "cookie", "brownie"])
+    
+    # Create keyword set for relevance checking
+    core_keywords = {core}
+    if "burger" in core:
+        core_keywords.update(["burger", "hamburger", "cheeseburger"])
+    core_keywords.update(modifiers[:2])  # Add top modifiers
+    
+    # Tracking for deduplication
+    seen_images = set()
+    seen_pages = set()
+    results = []
+    
+    # Strategy 1: Search specific food sites with strict query
+    strict_query = build_search_query(core, modifiers, description, add_context=True, use_negatives=True)
+    
+    for domain in FOOD_DOMAINS[:8]:  # Try top food sites
+        if len(results) >= limit:
+            break
             
-            # Stop if we have enough images
-            if len(all_images) >= limit_per_item:
-                all_images = all_images[:limit_per_item]
-                break
+        items = await cse_image_search(strict_query, domain=domain, num=2)
         
-        return (item_id, all_images)
+        for item in items:
+            if len(results) >= limit:
+                break
+                
+            link = item.get("link", "")
+            context_link = item.get("image", {}).get("contextLink", "")
+            
+            # Skip duplicates
+            canonical_url = canonical_image_url(link)
+            if canonical_url in seen_images or context_link in seen_pages:
+                continue
+            
+            # Check relevance
+            if not is_relevant_image(item, core_keywords, is_savory):
+                continue
+            
+            # Mark as seen and add to results
+            seen_images.add(canonical_url)
+            seen_pages.add(context_link)
+            results.append(link)
+            logger.debug(f"Found image from {domain}: {link}")
     
+    # Strategy 2: If not enough results, try broader search
+    if len(results) < limit:
+        looser_query = build_search_query(core, modifiers[:1], description, add_context=False, use_negatives=False)
+        
+        # Search without domain restriction
+        items = await cse_image_search(looser_query, num=10)
+        
+        for item in items:
+            if len(results) >= limit:
+                break
+                
+            link = item.get("link", "")
+            context_link = item.get("image", {}).get("contextLink", "")
+            
+            # Skip duplicates
+            canonical_url = canonical_image_url(link)
+            if canonical_url in seen_images or context_link in seen_pages:
+                continue
+            
+            # Check relevance (less strict)
+            if not is_relevant_image(item, {core}, is_savory):
+                continue
+            
+            # Prefer images from known food sites
+            display_link = item.get("displayLink", "").lower()
+            if not any(food_site in display_link for food_site in FOOD_DOMAINS):
+                # For non-food sites, be more strict about relevance
+                if not all(k in item.get("title", "").lower() for k in [core]):
+                    continue
+            
+            seen_images.add(canonical_url)
+            seen_pages.add(context_link)
+            results.append(link)
+            logger.debug(f"Found image (broader search): {link}")
+    
+    logger.info(f"Found {len(results)} images for '{name}'")
+    return results
+
+async def search_images_batch(items: List[Dict[str, str]], limit_per_item: int = 2) -> Dict[str, List[Tuple[str, str]]]:
+    """Search images for multiple menu items concurrently"""
+    
+    async def search_with_metadata(item_id: str, name: str, description: str):
+        """Search and return with metadata"""
+        image_urls = await search_images_for_item(name, description, limit_per_item)
+        
+        # Return URLs with source metadata
+        results = []
+        for url in image_urls:
+            results.append((url, "google_cse"))  # Mark source as Google CSE
+        
+        # If no results, add empty list
+        if not results:
+            logger.warning(f"No images found for item: {name}")
+        
+        return (item_id, results)
+    
+    # Create tasks for concurrent execution
     tasks = []
     for item in items:
-        # Create two different search queries for better variety
-        base_name = item['name']
-        
-        # First query: "item name plated dish"
-        query1 = f"{base_name} dish"
-        
-        # Second query: "item name food photography" with description
-        query2 = f"{base_name} food photography"
-        if item.get('description'):
-            first_sentence = extract_first_sentence(item['description'])
-            if first_sentence:
-                query2 += f" {first_sentence}"
-        
-        queries = [query1, query2]
-        tasks.append(search_with_id(item['id'], queries))
-        
-        logger.debug(f"Search queries for '{base_name}': {queries}")
+        tasks.append(search_with_metadata(
+            item['id'],
+            item['name'],
+            item.get('description')
+        ))
     
+    # Execute all searches concurrently
     results = await asyncio.gather(*tasks, return_exceptions=True)
     
+    # Build result dictionary
     image_map = {}
     for result in results:
         if isinstance(result, Exception):
