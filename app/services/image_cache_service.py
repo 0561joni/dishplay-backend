@@ -10,11 +10,68 @@ from datetime import datetime
 import re
 
 from app.core.async_supabase import async_supabase_client
+from app.core.supabase_client import get_supabase_client
 
 logger = logging.getLogger(__name__)
 
 # Supabase Storage bucket for cached images
 CACHE_BUCKET = "menu-images-cache"
+
+def _extract_data(response):
+    """Safely extract data payload from Supabase responses"""
+    if response is None:
+        return []
+    data = getattr(response, "data", None)
+    if data is None and isinstance(response, dict):
+        data = response.get("data")
+    return data or []
+
+
+def _extract_error(response):
+    """Extract error payload from Supabase responses"""
+    if response is None:
+        return None
+    error = getattr(response, "error", None)
+    if error is None and isinstance(response, dict):
+        error = response.get("error")
+    return error
+
+
+async def _upload_to_storage(bucket: str, path: str, data: bytes, options: Dict[str, str]):
+    """Upload bytes to Supabase storage in a background thread"""
+    supabase = get_supabase_client()
+
+    def _upload():
+        storage = supabase.storage.from_(bucket)
+        buffer = BytesIO(data)
+        buffer.seek(0)
+        return storage.upload(path, buffer, file_options=options)
+
+    return await asyncio.to_thread(_upload)
+
+
+async def _get_public_url(bucket: str, path: str) -> Optional[str]:
+    """Retrieve public URL for a storage object"""
+    supabase = get_supabase_client()
+
+    def _get():
+        return supabase.storage.from_(bucket).get_public_url(path)
+
+    response = await asyncio.to_thread(_get)
+
+    if isinstance(response, str):
+        return response
+
+    data = getattr(response, "data", None)
+    if isinstance(data, dict):
+        return data.get("publicUrl") or data.get("public_url")
+
+    if isinstance(response, dict):
+        data = response.get("data")
+        if isinstance(data, dict):
+            return data.get("publicUrl") or data.get("public_url")
+
+    return None
 
 
 def normalize_item_name(name: str) -> str:
@@ -59,174 +116,179 @@ def get_item_category(name: str) -> str:
 
 
 async def search_cached_images(item_name: str, item_description: str = None, limit: int = 3) -> List[str]:
-    """
-    Search for cached images in Supabase that match the menu item
-    Returns list of Supabase Storage URLs
-    """
+    """Search Supabase cache for relevant images"""
     try:
         normalized_name = normalize_item_name(item_name)
         category = get_item_category(item_name)
-        
-        # First try exact normalized name match
-        query = await async_supabase_client.table_select(
+
+        response = await async_supabase_client.table_select(
             "cached_food_images",
             "*",
-            filters={
-                "normalized_name": ("eq", normalized_name),
-                "is_active": ("eq", True)
-            },
+            eq={"normalized_name": normalized_name, "is_active": True},
+            order={"created_at": True},
             limit=limit
         )
-        
-        if query and len(query) >= limit:
-            logger.info(f"Found exact match for '{item_name}' in cache")
-            return [item['storage_url'] for item in query[:limit]]
-        
-        existing_urls = [item['storage_url'] for item in query] if query else []
-        
-        # If not enough, try category match with similar names
-        remaining = limit - len(existing_urls)
-        if remaining > 0 and category != 'general':
-            # Search for items in same category
-            category_query = await async_supabase_client.table_select(
+        error = _extract_error(response)
+        if error:
+            logger.error(f"Cache lookup failed for '{item_name}': {error}")
+            records: List[Dict] = []
+        else:
+            records = _extract_data(response)
+
+        cached_urls: List[str] = [item.get("storage_url") for item in records if item.get("storage_url")]
+        cached_urls = [url for url in cached_urls if url][:limit]
+
+        if len(cached_urls) >= limit:
+            logger.info(f"Found {len(cached_urls)} exact cached images for '{item_name}'")
+            return cached_urls
+
+        remaining = max(0, limit - len(cached_urls))
+
+        if remaining > 0 and category != "general":
+            category_response = await async_supabase_client.table_select(
                 "cached_food_images",
                 "*",
-                filters={
-                    "category": ("eq", category),
-                    "is_active": ("eq", True)
-                },
-                limit=remaining * 3  # Get more to filter
+                eq={"category": category, "is_active": True},
+                limit=remaining * 5
             )
-            
-            if category_query:
-                # Score matches based on name similarity
-                scored_matches = []
-                for item in category_query:
-                    if item['storage_url'] in existing_urls:
-                        continue
-                    
-                    # Calculate similarity score
-                    item_words = set(item['normalized_name'].split())
-                    search_words = set(normalized_name.split())
-                    
-                    # Jaccard similarity
-                    intersection = item_words.intersection(search_words)
-                    union = item_words.union(search_words)
-                    similarity = len(intersection) / len(union) if union else 0
-                    
-                    if similarity > 0.3:  # Threshold for similarity
-                        scored_matches.append((similarity, item['storage_url']))
-                
-                # Sort by similarity and take best matches
-                scored_matches.sort(reverse=True)
-                for _, url in scored_matches[:remaining]:
-                    existing_urls.append(url)
-                
-                if len(existing_urls) > len(query if query else []):
-                    logger.info(f"Found {len(existing_urls)} similar images for '{item_name}' in category '{category}'")
-        
-        return existing_urls
-        
+            category_error = _extract_error(category_response)
+            if category_error:
+                logger.error(f"Category cache lookup failed for '{item_name}': {category_error}")
+                category_records = []
+            else:
+                category_records = _extract_data(category_response)
+
+            scored_matches: List[Tuple[float, str]] = []
+            search_words = set(normalized_name.split())
+
+            for item in category_records:
+                storage_url = item.get("storage_url")
+                normalized_cached = item.get("normalized_name", "")
+                if not storage_url or storage_url in cached_urls:
+                    continue
+
+                item_words = set(normalized_cached.split())
+                union = item_words.union(search_words)
+                similarity = len(item_words.intersection(search_words)) / len(union) if union else 0
+
+                if similarity > 0.3:
+                    scored_matches.append((similarity, storage_url))
+
+            scored_matches.sort(reverse=True)
+            for _, url in scored_matches[:remaining]:
+                cached_urls.append(url)
+
+            if scored_matches:
+                logger.info(f"Found {min(len(scored_matches), remaining)} similar cached images for '{item_name}' in category '{category}'")
+
+        return cached_urls[:limit]
+
     except Exception as e:
         logger.error(f"Error searching cached images: {str(e)}")
         return []
 
 
+
 async def download_and_store_image(image_url: str, item_name: str, 
                                   item_description: str = None) -> Optional[str]:
-    """
-    Download image from URL and store in Supabase Storage
-    Returns the permanent Supabase Storage URL
-    """
+    """Download image from URL and store in Supabase Storage"""
     try:
-        # Download image
         async with aiohttp.ClientSession() as session:
             headers = {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
             }
-            
             async with session.get(image_url, headers=headers, timeout=10) as response:
                 if response.status != 200:
                     logger.error(f"Failed to download image: {response.status}")
                     return None
-                
                 image_data = await response.read()
-        
-        # Validate and optimize image
+
+        optimized_data = image_data
+        image_width: Optional[int] = None
+        image_height: Optional[int] = None
+
         try:
             img = Image.open(BytesIO(image_data))
-            
-            # Convert RGBA to RGB if needed
+
             if img.mode in ('RGBA', 'LA', 'P'):
                 background = Image.new('RGB', img.size, (255, 255, 255))
                 if img.mode == 'P':
                     img = img.convert('RGBA')
-                background.paste(img, mask=img.split()[-1] if img.mode == 'RGBA' else None)
+                background.paste(img, mask=img.split()[-1] if img.mode in ('RGBA', 'LA') else None)
                 img = background
-            
-            # Resize if too large (max 1920px width)
+            elif img.mode not in ('RGB', 'L'):
+                img = img.convert('RGB')
+
             if img.width > 1920:
                 ratio = 1920 / img.width
                 new_height = int(img.height * ratio)
                 img = img.resize((1920, new_height), Image.Resampling.LANCZOS)
-            
-            # Save optimized image
+
             output = BytesIO()
             img.save(output, format='JPEG', quality=85, optimize=True)
             optimized_data = output.getvalue()
-            
+            image_width, image_height = img.size
+            img.close()
         except Exception as e:
             logger.error(f"Error processing image: {str(e)}")
-            optimized_data = image_data  # Use original if processing fails
-        
-        # Generate unique filename
+            try:
+                with Image.open(BytesIO(image_data)) as original_img:
+                    image_width, image_height = original_img.size
+            except Exception:
+                image_width = image_height = None
+
         content_hash = hashlib.md5(optimized_data).hexdigest()[:12]
         normalized_name = normalize_item_name(item_name)
-        safe_name = re.sub(r'[^\w\s-]', '', normalized_name).replace(' ', '-')[:30]
+        safe_name = re.sub(r'[^\w\s-]', '', normalized_name).replace(' ', '-')[:30] or 'menu-item'
         filename = f"{safe_name}_{content_hash}.jpg"
-        
-        # Upload to Supabase Storage
         storage_path = f"cached/{get_item_category(item_name)}/{filename}"
-        
-        result = await async_supabase_client.storage_upload(
+
+        upload_response = await _upload_to_storage(
             CACHE_BUCKET,
             storage_path,
             optimized_data,
             {
-                "content-type": "image/jpeg",
-                "cache-control": "public, max-age=31536000"  # Cache for 1 year
+                'content-type': 'image/jpeg',
+                'cache-control': 'public, max-age=31536000',
+                'upsert': 'true'
             }
         )
-        
-        if not result:
-            logger.error("Failed to upload image to Supabase Storage")
+
+        upload_error = _extract_error(upload_response)
+        if upload_error:
+            message = str(upload_error)
+            if 'exists' not in message.lower():
+                logger.error(f"Failed to upload image to Supabase Storage: {message}")
+                return None
+
+        storage_url = await _get_public_url(CACHE_BUCKET, storage_path)
+        if not storage_url:
+            logger.error("Failed to obtain public URL for cached image")
             return None
-        
-        # Get public URL
-        storage_url = await async_supabase_client.storage_get_public_url(
-            CACHE_BUCKET,
-            storage_path
-        )
-        
-        # Store metadata in database
-        await async_supabase_client.table_insert("cached_food_images", {
-            "storage_path": storage_path,
-            "storage_url": storage_url,
-            "original_url": image_url,
-            "item_name": item_name,
-            "normalized_name": normalized_name,
-            "category": get_item_category(item_name),
-            "description": item_description,
-            "file_size": len(optimized_data),
-            "image_width": img.width,
-            "image_height": img.height,
-            "created_at": datetime.utcnow().isoformat(),
-            "is_active": True
-        })
-        
+
+        metadata = {
+            'storage_path': storage_path,
+            'storage_url': storage_url,
+            'original_url': image_url,
+            'item_name': item_name,
+            'normalized_name': normalized_name,
+            'category': get_item_category(item_name),
+            'description': item_description,
+            'file_size': len(optimized_data),
+            'image_width': image_width,
+            'image_height': image_height,
+            'created_at': datetime.utcnow().isoformat(),
+            'is_active': True
+        }
+
+        insert_response = await async_supabase_client.table_insert("cached_food_images", metadata)
+        insert_error = _extract_error(insert_response)
+        if insert_error:
+            logger.error(f"Failed to record cached image metadata: {insert_error}")
+
         logger.info(f"Successfully cached image for '{item_name}' at {storage_path}")
         return storage_url
-        
+
     except Exception as e:
         logger.error(f"Error downloading and storing image: {str(e)}")
         return None

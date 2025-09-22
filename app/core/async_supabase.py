@@ -61,6 +61,8 @@ class AsyncSupabaseClient:
             elif key == "order":
                 for field, desc in value.items():
                     query = query.order(field, desc=desc)
+            elif key == "limit":
+                query = query.limit(value)
         
         func = partial(query.execute)
         return await self.loop.run_in_executor(None, func)
