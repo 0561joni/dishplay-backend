@@ -424,6 +424,43 @@ async def get_user_menus(
             detail="Failed to fetch menus"
         )
 
+@router.get("/user/latest")
+async def get_latest_user_menu(
+    current_user: Dict = Depends(get_current_user)
+):
+    """Get the most recently processed menu for the current user"""
+    try:
+        menus_response = await async_supabase_client.table_select(
+            "menus",
+            "id, restaurant_name, status, processed_at",
+            eq={"user_id": current_user["id"]},
+            order={"processed_at": True},
+            limit=1
+        )
+
+        menu_records = getattr(menus_response, "data", None) or []
+        if menu_records:
+            latest_menu = menu_records[0]
+            return {
+                "menu": {
+                    "id": latest_menu.get("id"),
+                    "restaurant_name": latest_menu.get("restaurant_name"),
+                    "status": latest_menu.get("status"),
+                    "processed_at": latest_menu.get("processed_at")
+                }
+            }
+
+        return {"menu": None}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error fetching latest menu for user {current_user['id']}: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to fetch latest menu"
+        )
+
 @router.websocket("/ws/progress/{menu_id}")
 async def websocket_progress(websocket: WebSocket, menu_id: str):
     """WebSocket endpoint for real-time progress updates"""
