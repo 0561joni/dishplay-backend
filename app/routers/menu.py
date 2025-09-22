@@ -287,7 +287,11 @@ async def upload_menu(
         logger.info(f"Successfully processed menu {menu_id} with {len(menu_items)} items in {total_time:.2f}s")
         
         # Get restaurant name from the extraction if available
-        restaurant_name = extracted_items[0].get("restaurant_name", "Uploaded Menu") if extracted_items else "Uploaded Menu"
+        restaurant_name = "Uploaded Menu"
+        if extracted_items:
+            candidate = next((item.get("restaurant_name") for item in extracted_items if isinstance(item.get("restaurant_name"), str) and item.get("restaurant_name").strip()), None)
+            if candidate:
+                restaurant_name = candidate.strip()
         
         return MenuResponse(
             success=True,
