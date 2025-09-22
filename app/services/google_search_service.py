@@ -46,13 +46,27 @@ NEGATIVE_SWEET_TERMS = {
 
 # Generic negative terms to avoid stock photos and non-food items
 NEGATIVE_GENERIC_TERMS = {
-    "logo", "vector", "illustration", "clipart", "packaging", 
+    "logo", "vector", "illustration", "clipart", "packaging",
     "stock", "getty", "shutterstock", "alamy", "cartoon", "drawing",
     "menu", "text", "writing", "sign", "board", "blackboard",
     "face", "person", "people", "chef", "waiter", "customer",
     "restaurant interior", "kitchen", "dining room", "table setting",
     "cutlery", "napkin", "tablecloth", "candle", "flower", "vase",
-    "book", "magazine", "flyer", "brochure", "poster", "advertisement"
+    "book", "magazine", "flyer", "brochure", "poster", "advertisement",
+    "watch", "wristwatch", "smartwatch", "chronograph", "bracelet", "strap",
+    "clock", "timepiece", "jewelry", "jewelery", "necklace", "earring", "earrings",
+    "handbag", "purse", "backpack", "wallet", "shoe", "sneaker", "boot",
+    "clothing", "apparel", "outfit", "garment", "fashion", "runway",
+    "phone", "smartphone", "tablet", "laptop", "computer", "keyboard"
+}
+
+# Terms that often indicate non-food product imagery
+NEGATIVE_OBJECT_TERMS = {
+    "watch", "wristwatch", "smartwatch", "chronograph", "bracelet", "strap",
+    "clock", "timepiece", "jewelry", "jewelery", "necklace", "earring", "earrings",
+    "handbag", "purse", "backpack", "wallet", "shoe", "sneaker", "boot",
+    "clothing", "apparel", "outfit", "garment", "fashion", "runway",
+    "phone", "smartphone", "tablet", "laptop", "computer", "keyboard"
 }
 
 def normalize_menu_item(raw_name: str) -> Tuple[str, List[str]]:
@@ -123,24 +137,34 @@ def build_search_query(core: str, modifiers: List[str], description: str = None,
     
     # Add context for better food photos
     if add_context:
-        parts.extend(['"restaurant"', '"plated"', '"food photography"'])
+        parts.extend(['"restaurant"', '"plated"', '"food photography"', 'dish'])
     
     # Add negative terms to exclude unwanted results
     if use_negatives:
         # Check if item is likely savory
         is_savory = not any(sweet in core for sweet in ["cake", "dessert", "ice cream", "chocolate", "cookie", "brownie"])
-        
+
         if is_savory:
             # Exclude dessert terms for savory items
             for term in ["dessert", "cake", "sweet"]:
                 parts.append(f'-{term}')
-        
+
         # Priority negative terms - always exclude these
         priority_negatives = [
             "-menu", "-text", "-face", "-person", "-chef",
             "-logo", "-cartoon", "-illustration"
         ]
-        parts.extend(priority_negatives)
+
+        negative_tokens = list(priority_negatives)
+        for generic_term in sorted(NEGATIVE_GENERIC_TERMS.union(NEGATIVE_OBJECT_TERMS)):
+            sanitized = generic_term.strip()
+            if not sanitized:
+                continue
+            token = f'-"{sanitized}"' if " " in sanitized else f'-{sanitized}'
+            if token not in negative_tokens:
+                negative_tokens.append(token)
+
+        parts.extend(negative_tokens)
     
     return " ".join(parts)
 
@@ -202,6 +226,9 @@ def is_relevant_image(item: Dict, core_keywords: Set[str], is_savory: bool = Tru
         if any(sweet_term in all_text for sweet_term in NEGATIVE_SWEET_TERMS):
             return False
     
+    if any(term in all_text for term in NEGATIVE_OBJECT_TERMS):
+        return False
+
     # Avoid obvious non-food content
     unwanted_terms = [
         "stock photo", "clipart", "vector", "menu", "price list",
@@ -449,3 +476,4 @@ async def search_images_batch(items: List[Dict[str, str]], limit_per_item: int =
         image_map[item_id] = images
     
     return image_map
+
