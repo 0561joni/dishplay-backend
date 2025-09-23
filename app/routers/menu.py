@@ -164,7 +164,12 @@ async def upload_menu(
         # Process each menu item
         menu_items = []
         menu_item_records = []
-        
+        placeholder_items = []
+
+        restaurant_name = extracted_items[0].get("restaurant_name") if extracted_items else None
+        if not restaurant_name or not isinstance(restaurant_name, str) or not restaurant_name.strip():
+            restaurant_name = "Uploaded Menu"
+
         # First, create all menu item records
         for index, item in enumerate(extracted_items):
             menu_item_id = str(uuid.uuid4())
@@ -178,13 +183,28 @@ async def upload_menu(
                 "order_index": index
             }
             menu_item_records.append((menu_item_id, menu_item_data, item))
-        
+            placeholder_items.append({
+                "id": menu_item_id,
+                "name": menu_item_data["item_name"],
+                "description": menu_item_data["description"],
+                "price": menu_item_data["price"],
+                "currency": menu_item_data["currency"],
+                "order_index": menu_item_data["order_index"],
+            })
+
         # Insert all menu items at once
         menu_items_to_insert = [record[1] for record in menu_item_records]
-        await progress_tracker.update_progress(menu_id, "saving_items", 45)
+        await progress_tracker.update_progress(
+            menu_id,
+            "saving_items",
+            45,
+            {
+                "items_snapshot": placeholder_items,
+                "menu_name": restaurant_name
+            }
+        )
         await async_supabase_client.table_insert("menu_items", menu_items_to_insert)
         await progress_tracker.update_progress(menu_id, "items_saved", 50)
-        
         if TEST_MODE:
             # Test mode: use mock images
             logger.info(f"TEST MODE: Using mock images for {len(menu_item_records)} items")
@@ -192,48 +212,42 @@ async def upload_menu(
             image_results = {record[0]: [(mock_images[0], "mock")] for record in menu_item_records}
         else:
             # Normal mode: generate images using batch processing
-            # Prepare items for batch generation
             items_for_generation = []
             for menu_item_id, menu_item_data, item in menu_item_records:
-                # Use English name for generation if available, otherwise use original
                 item_name = item.get('name_en', item['name'])
-                
-                # Use description for better context
                 description = item.get('description_en') or item.get('description')
-                
+
                 items_for_generation.append({
                     'id': menu_item_id,
                     'name': item_name,
                     'description': description
                 })
-            
-            # Execute batch image search using Google CSE
+
             logger.info(f"Starting batch image search for {len(items_for_generation)} items")
             await progress_tracker.update_progress(menu_id, "searching_images", 55)
             search_start = datetime.utcnow()
-            
-            # Call the Google search batch function
+
             image_results = await search_images_batch(items_for_generation, limit_per_item=3)
-            
+
             search_time = (datetime.utcnow() - search_start).total_seconds()
             logger.info(f"Batch image search completed in {search_time:.2f}s")
-            await progress_tracker.update_progress(menu_id, "images_found", 85)
-        
+
         # Process results and prepare image records
         all_image_records = []
-        
-        for menu_item_id, menu_item_data, item in menu_item_records:
+        total_menu_items = len(menu_item_records) or 1
+
+        for index, (menu_item_id, menu_item_data, item) in enumerate(menu_item_records):
             image_urls = []
-            
+            item_results = image_results.get(menu_item_id, [])
+            image_sources = []
+
             # Get results for this item
-            if menu_item_id in image_results and image_results[menu_item_id]:
-                item_results = image_results[menu_item_id]
-                
-                # Process each generated image
+            if item_results:
                 for j, (image_url, model_used) in enumerate(item_results):
                     if image_url:
                         image_urls.append(image_url)
-                        
+                        image_sources.append({"url": image_url, "source": model_used})
+
                         # Always store the image association in the database
                         # Even for cached images, we need to associate them with this menu item
                         all_image_records.append({
@@ -242,13 +256,14 @@ async def upload_menu(
                             "source": model_used,  # "google_cse" or "mock"
                             "is_primary": j == 0
                         })
-            
+
             # If no images were generated, use fallback placeholder
             if not image_urls:
                 logger.warning(f"No image generated for item '{item['name']}', using fallback")
                 fallback_url = get_fallback_image()
                 image_urls.append(fallback_url)
-                
+                image_sources.append({"url": fallback_url, "source": "fallback"})
+
                 # Store fallback image in database
                 all_image_records.append({
                     "menu_item_id": menu_item_id,
@@ -256,7 +271,7 @@ async def upload_menu(
                     "source": "fallback",
                     "is_primary": True
                 })
-            
+
             # Add to response
             menu_items.append({
                 "id": menu_item_id,
@@ -265,7 +280,25 @@ async def upload_menu(
                 "price": item.get("price"),
                 "images": image_urls
             })
-        
+
+            progress_value = 55 + int(((index + 1) / total_menu_items) * 25)
+            await progress_tracker.update_progress(
+                menu_id,
+                "searching_images",
+                min(progress_value, 80),
+                {
+                    "item_image_update": {
+                        "menu_item_id": menu_item_id,
+                        "images": image_urls,
+                        "primary_image": image_urls[0] if image_urls else None,
+                        "status": "ready" if item_results else "fallback",
+                        "sequence": str(uuid.uuid4()),
+                        "sources": image_sources
+                    }
+                }
+            )
+
+        await progress_tracker.update_progress(menu_id, "images_found", 85)
         # Batch insert all image records
         if all_image_records:
             await progress_tracker.update_progress(menu_id, "saving_images", 90)
