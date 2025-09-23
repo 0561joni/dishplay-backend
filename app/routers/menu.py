@@ -466,7 +466,7 @@ async def get_latest_user_menu(
     try:
         menus_response = await async_supabase_client.table_select(
             "menus",
-            "id, restaurant_name, status, processed_at, name",
+            "id, status, processed_at",
             eq={"user_id": current_user["id"]},
             order={"processed_at": True},
             limit=limit
