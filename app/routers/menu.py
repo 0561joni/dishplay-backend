@@ -1,4 +1,4 @@
-# app/routers/menu.py
+﻿# app/routers/menu.py
 from fastapi import APIRouter, UploadFile, File, Depends, HTTPException, status, WebSocket, WebSocketDisconnect, Query
 from typing import Dict, List, Optional
 import logging
@@ -62,6 +62,37 @@ def get_mock_images():
         "https://images.unsplash.com/photo-1512621776951-a57141f2eefd?w=400"
     ]
 
+def resolve_menu_title(extraction_result: Dict, items: List[Dict]) -> str:
+    """Determine a human-friendly menu title from extraction data."""
+    candidates = [
+        extraction_result.get("title"),
+        extraction_result.get("menu_title"),
+        extraction_result.get("restaurant_name")
+    ]
+
+    for candidate in candidates:
+        if isinstance(candidate, str) and candidate.strip():
+            return candidate.strip()
+
+    item_names = [
+        item.get("name")
+        for item in items
+        if isinstance(item, dict) and isinstance(item.get("name"), str) and item.get("name").strip()
+    ]
+
+    if item_names:
+        primary = item_names[0].strip()
+        secondary = next((name.strip() for name in item_names[1:] if name.strip()), None)
+        if secondary:
+            combined = f"{primary} & {secondary}"
+            if len(combined) <= 60:
+                return combined
+        if not primary.lower().endswith("menu"):
+            primary = f"{primary} Menu"
+        return primary
+
+    return "Uploaded Menu"
+
 @router.post("/upload", response_model=MenuResponse)
 async def upload_menu(
     menu: UploadFile = File(...),
@@ -103,11 +134,14 @@ async def upload_menu(
     # Start progress tracking (estimate 10 items initially)
     await progress_tracker.start_tracking(menu_id, estimated_items=10)
     
+    menu_title = "Uploaded Menu"
+
     try:
         menu_response = await async_supabase_client.table_insert("menus", {
             "id": menu_id,
             "user_id": current_user["id"],
             "status": "processing",
+            "title": "Uploaded Menu",
             "processed_at": datetime.utcnow().isoformat()
         })
         
@@ -121,10 +155,17 @@ async def upload_menu(
         )
     
     try:
+        extraction_result: Dict = {"items": []}
         if TEST_MODE:
             # Test mode: use mock data
             logger.info(f"TEST MODE: Using mock data for menu {menu_id}")
             extracted_items = get_mock_menu_items()
+            extraction_result = {
+                "items": extracted_items,
+                "title": "Sample Menu",
+                "menu_title": "Sample Menu",
+                "restaurant_name": "Sample Menu"
+            }
         else:
             # Normal mode: process image and extract items
             logger.info(f"Processing image for menu {menu_id}")
@@ -134,26 +175,38 @@ async def upload_menu(
             process_time = (datetime.utcnow() - process_start).total_seconds()
             logger.info(f"Image processing completed in {process_time:.2f}s")
             await progress_tracker.update_progress(menu_id, "image_processed", 20)
-            
+
             # Extract menu items using OpenAI
             logger.info(f"Extracting menu items for menu {menu_id}")
             await progress_tracker.update_progress(menu_id, "extracting_menu", 25)
             extraction_start = datetime.utcnow()
-            extracted_items = await extract_menu_items(base64_image)
+            extraction_result = await extract_menu_items(base64_image)
             extraction_time = (datetime.utcnow() - extraction_start).total_seconds()
-            logger.info(f"Menu extraction completed in {extraction_time:.2f}s, found {len(extracted_items) if extracted_items else 0} items")
-            
-            # Update progress with actual item count
-            if extracted_items:
-                await progress_tracker.update_progress(
-                    menu_id, "menu_extracted", 40,
-                    {"item_count": len(extracted_items)}
-                )
-        
+            extracted_items = extraction_result.get("items", [])
+            logger.info(
+                f"Menu extraction completed in {extraction_time:.2f}s, found {len(extracted_items) if extracted_items else 0} items"
+            )
+
+        extracted_items = extraction_result.get("items", [])
+
+        menu_title = resolve_menu_title(extraction_result, extracted_items)
+        logger.info(f"Resolved menu title for {menu_id}: {menu_title}")
+        try:
+            await async_supabase_client.table_update("menus", {"title": menu_title}, eq={"id": menu_id})
+        except Exception as update_error:
+            logger.warning(f"Failed to update menu title for {menu_id}: {update_error}")
+
+        if extracted_items:
+            await progress_tracker.update_progress(
+                menu_id, "menu_extracted", 40,
+                {"item_count": len(extracted_items), "menu_title": menu_title}
+            )
+
         if not extracted_items:
             # Update menu status to failed
             await async_supabase_client.table_update("menus", {
-                "status": "failed"
+                "status": "failed",
+                "title": menu_title
             }, eq={"id": menu_id})
             
             raise HTTPException(
@@ -165,10 +218,6 @@ async def upload_menu(
         menu_items = []
         menu_item_records = []
         placeholder_items = []
-
-        restaurant_name = extracted_items[0].get("restaurant_name") if extracted_items else None
-        if not restaurant_name or not isinstance(restaurant_name, str) or not restaurant_name.strip():
-            restaurant_name = "Uploaded Menu"
 
         # First, create all menu item records
         for index, item in enumerate(extracted_items):
@@ -200,7 +249,7 @@ async def upload_menu(
             45,
             {
                 "items_snapshot": placeholder_items,
-                "menu_name": restaurant_name
+                "menu_title": menu_title
             }
         )
         await async_supabase_client.table_insert("menu_items", menu_items_to_insert)
@@ -307,7 +356,8 @@ async def upload_menu(
         # Update menu status to completed
         await progress_tracker.update_progress(menu_id, "finalizing", 95)
         await async_supabase_client.table_update("menus", {
-            "status": "completed"
+            "status": "completed",
+            "title": menu_title
         }, eq={"id": menu_id})
         
         # Deduct credits
@@ -319,18 +369,11 @@ async def upload_menu(
         total_time = (datetime.utcnow() - start_time).total_seconds()
         logger.info(f"Successfully processed menu {menu_id} with {len(menu_items)} items in {total_time:.2f}s")
         
-        # Get restaurant name from the extraction if available
-        restaurant_name = "Uploaded Menu"
-        if extracted_items:
-            candidate = next((item.get("restaurant_name") for item in extracted_items if isinstance(item.get("restaurant_name"), str) and item.get("restaurant_name").strip()), None)
-            if candidate:
-                restaurant_name = candidate.strip()
-        
         return MenuResponse(
             success=True,
             message="Menu processed successfully",
             menu_id=menu_id,
-            restaurantName=restaurant_name,
+            title=menu_title,
             items=menu_items,
             credits_remaining=current_user["credits"] - 1
         )
@@ -348,7 +391,8 @@ async def upload_menu(
         # Update menu status to failed
         try:
             await async_supabase_client.table_update("menus", {
-                "status": "failed"
+                "status": "failed",
+                "title": menu_title
             }, eq={"id": menu_id})
         except Exception as update_error:
             logger.error(f"Failed to update menu status to 'failed' for menu {menu_id}: {str(update_error)}")
@@ -409,10 +453,14 @@ async def get_menu(
                 "images": images
             })
         
+        resolved_title = menu_data.get("title") or menu_data.get("name") or "Uploaded Menu"
+
         return {
             "id": menu_data["id"],
             "status": menu_data["status"],
             "processed_at": menu_data["processed_at"],
+            "title": resolved_title,
+            "name": resolved_title,
             "items": items
         }
         
@@ -441,8 +489,11 @@ async def get_user_menus(
         menus = []
         for menu in menus_response.data:
             item_count = menu.get("menu_items", [{}])[0].get("count", 0) if menu.get("menu_items") else 0
+            title_value = menu.get("title") or menu.get("name") or "Uploaded Menu"
             menus.append({
                 "id": menu["id"],
+                "title": title_value,
+                "name": title_value,
                 "status": menu["status"],
                 "processed_at": menu["processed_at"],
                 "item_count": item_count
@@ -466,7 +517,7 @@ async def get_latest_user_menu(
     try:
         menus_response = await async_supabase_client.table_select(
             "menus",
-            "id, status, processed_at",
+            "id, status, processed_at, title",
             eq={"user_id": current_user["id"]},
             order={"processed_at": True},
             limit=limit
@@ -478,9 +529,17 @@ async def get_latest_user_menu(
             menu_id = record.get("id")
             if not menu_id:
                 continue
+            menu_title_value = (
+                record.get("title")
+                or record.get("restaurant_name")
+                or record.get("name")
+                or "Uploaded Menu"
+            )
             simplified_records.append({
                 "id": menu_id,
-                "restaurant_name": record.get("restaurant_name") or record.get("name"),
+                "title": menu_title_value,
+                "name": menu_title_value,
+                "restaurant_name": menu_title_value,
                 "status": record.get("status"),
                 "processed_at": record.get("processed_at"),
             })
@@ -517,7 +576,8 @@ async def websocket_progress(websocket: WebSocket, menu_id: str):
                 "progress": data.get("progress"),
                 "message": data.get("message"),
                 "estimated_time_remaining": data.get("estimated_time_remaining", 0),
-                "item_count": data.get("item_count", 0)
+                "item_count": data.get("item_count", 0),
+                "menu_title": data.get("menu_title")
             })
         except Exception as e:
             logger.error(f"Error sending WebSocket message: {e}")
@@ -562,7 +622,7 @@ async def get_menu_progress(
         try:
             menu_response = await async_supabase_client.table_select(
                 "menus",
-                "id, status",
+                "id, status, title",
                 eq={"id": menu_id, "user_id": current_user["id"]},
                 single=True
             )
@@ -574,13 +634,15 @@ async def get_menu_progress(
                 )
             
             # Return completed status from database
+            resolved_title = menu_response.data.get("title") or "Uploaded Menu"
             return {
                 "menu_id": menu_id,
                 "status": menu_response.data["status"],
                 "progress": 100 if menu_response.data["status"] == "completed" else 0,
-                "message": {"text": "Menu processing completed", "emoji": "✅"}
+                "message": {"text": "Menu processing completed", "emoji": "✅"},
+                "menu_title": resolved_title
             }
-            
+
         except HTTPException:
             raise
         except Exception as e:

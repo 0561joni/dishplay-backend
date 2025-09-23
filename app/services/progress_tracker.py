@@ -49,6 +49,7 @@ class ProgressTracker:
                 "estimated_total_time": total_time,
                 "estimated_completion": datetime.utcnow() + timedelta(seconds=total_time),
                 "item_count": estimated_items,
+                "menu_title": "Uploaded Menu",
                 "stages_completed": [],
                 "current_stage_start": datetime.utcnow()
             }
@@ -142,6 +143,7 @@ class ProgressTracker:
                     "message": data["message"],
                     "estimated_time_remaining": data.get("estimated_time_remaining", 0),
                     "item_count": data.get("item_count", 0),
+                    "menu_title": data.get("menu_title"),
                     "elapsed_time": (datetime.utcnow() - data["started_at"]).total_seconds()
                 }
             return None

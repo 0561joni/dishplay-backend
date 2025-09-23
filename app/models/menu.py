@@ -1,5 +1,5 @@
 # app/models/menu.py
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 from typing import List, Optional
 from datetime import datetime
 
@@ -14,7 +14,7 @@ class MenuResponse(BaseModel):
     success: bool
     message: str
     menu_id: str
-    restaurantName: str = Field(alias="restaurantName")
+    title: str
     items: List[MenuItem]
     credits_remaining: Optional[int] = None
 
