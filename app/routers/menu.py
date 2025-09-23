@@ -1,5 +1,5 @@
 # app/routers/menu.py
-from fastapi import APIRouter, UploadFile, File, Depends, HTTPException, status, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, UploadFile, File, Depends, HTTPException, status, WebSocket, WebSocketDisconnect, Query
 from typing import Dict, List, Optional
 import logging
 import asyncio
@@ -459,31 +459,37 @@ async def get_user_menus(
 
 @router.get("/user/latest")
 async def get_latest_user_menu(
-    current_user: Dict = Depends(get_current_user)
+    current_user: Dict = Depends(get_current_user),
+    limit: int = Query(1, ge=1, le=10)
 ):
-    """Get the most recently processed menu for the current user"""
+    """Get the most recently processed menu entries for the current user"""
     try:
         menus_response = await async_supabase_client.table_select(
             "menus",
-            "id, restaurant_name, status, processed_at",
+            "id, restaurant_name, status, processed_at, name",
             eq={"user_id": current_user["id"]},
             order={"processed_at": True},
-            limit=1
+            limit=limit
         )
 
         menu_records = getattr(menus_response, "data", None) or []
-        if menu_records:
-            latest_menu = menu_records[0]
-            return {
-                "menu": {
-                    "id": latest_menu.get("id"),
-                    "restaurant_name": latest_menu.get("restaurant_name"),
-                    "status": latest_menu.get("status"),
-                    "processed_at": latest_menu.get("processed_at")
-                }
-            }
+        simplified_records = []
+        for record in menu_records:
+            menu_id = record.get("id")
+            if not menu_id:
+                continue
+            simplified_records.append({
+                "id": menu_id,
+                "restaurant_name": record.get("restaurant_name") or record.get("name"),
+                "status": record.get("status"),
+                "processed_at": record.get("processed_at"),
+            })
 
-        return {"menu": None}
+        response_payload = {
+            "menus": simplified_records,
+            "menu": simplified_records[0] if simplified_records else None
+        }
+        return response_payload
 
     except HTTPException:
         raise
@@ -493,6 +499,7 @@ async def get_latest_user_menu(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to fetch latest menu"
         )
+
 
 @router.websocket("/ws/progress/{menu_id}")
 async def websocket_progress(websocket: WebSocket, menu_id: str):
