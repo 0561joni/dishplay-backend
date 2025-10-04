@@ -27,6 +27,9 @@ MAX_FILE_SIZE = 10 * 1024 * 1024
 # Test mode flag - set via environment variable
 TEST_MODE = os.getenv("TEST_MODE", "false").lower() == "true"
 
+# Disable semantic search flag - useful for low-memory environments
+DISABLE_SEMANTIC_SEARCH = os.getenv("DISABLE_SEMANTIC_SEARCH", "true").lower() == "true"
+
 def get_mock_menu_items():
     """Return mock menu items for testing"""
     return [
@@ -277,42 +280,47 @@ async def upload_menu(
                     'description': description
                 })
 
-            # Phase 1: Semantic search
-            logger.info(f"Phase 1: Starting semantic search for {len(items_for_processing)} items")
-            await progress_tracker.update_progress(menu_id, "semantic_search", 55)
-            semantic_start = datetime.utcnow()
-
-            semantic_results = await search_dishes_batch(items_for_processing, top_k=3)
-
-            semantic_time = (datetime.utcnow() - semantic_start).total_seconds()
-            logger.info(f"Semantic search completed in {semantic_time:.2f}s")
-
-            # Separate items into those with semantic matches and those needing fallback
+            # Phase 1: Semantic search (skip if disabled)
             items_with_semantic = []
             items_needing_google = []
             image_results = {}
 
-            for item in items_for_processing:
-                item_id = item['id']
-                matches = semantic_results.get(item_id, [])
+            if DISABLE_SEMANTIC_SEARCH:
+                logger.info(f"Semantic search disabled - using Google search for all {len(items_for_processing)} items")
+                items_needing_google = items_for_processing
+                await progress_tracker.update_progress(menu_id, "semantic_skipped", 60)
+            else:
+                logger.info(f"Phase 1: Starting semantic search for {len(items_for_processing)} items")
+                await progress_tracker.update_progress(menu_id, "semantic_search", 55)
+                semantic_start = datetime.utcnow()
 
-                if matches:
-                    # Use semantic search results (top 3 images)
-                    image_urls = [(match['image_url'], f"semantic:{match['similarity']:.2f}")
-                                  for match in matches]
-                    image_results[item_id] = image_urls
-                    items_with_semantic.append(item)
-                    logger.info(f"✓ Semantic match for '{item['name']}': {len(matches)} results")
-                else:
-                    # No good semantic match - need Google search
-                    items_needing_google.append(item)
-                    logger.info(f"✗ No semantic match for '{item['name']}' - will use Google search")
+                semantic_results = await search_dishes_batch(items_for_processing, top_k=3)
 
-            logger.info(f"Semantic search: {len(items_with_semantic)} matched, {len(items_needing_google)} need fallback")
-            await progress_tracker.update_progress(
-                menu_id, "semantic_complete", 65,
-                {"semantic_matches": len(items_with_semantic), "fallback_needed": len(items_needing_google)}
-            )
+                semantic_time = (datetime.utcnow() - semantic_start).total_seconds()
+                logger.info(f"Semantic search completed in {semantic_time:.2f}s")
+
+                # Separate items into those with semantic matches and those needing fallback
+                for item in items_for_processing:
+                    item_id = item['id']
+                    matches = semantic_results.get(item_id, [])
+
+                    if matches:
+                        # Use semantic search results (top 3 images)
+                        image_urls = [(match['image_url'], f"semantic:{match['similarity']:.2f}")
+                                      for match in matches]
+                        image_results[item_id] = image_urls
+                        items_with_semantic.append(item)
+                        logger.info(f"✓ Semantic match for '{item['name']}': {len(matches)} results")
+                    else:
+                        # No good semantic match - need Google search
+                        items_needing_google.append(item)
+                        logger.info(f"✗ No semantic match for '{item['name']}' - will use Google search")
+
+                logger.info(f"Semantic search: {len(items_with_semantic)} matched, {len(items_needing_google)} need fallback")
+                await progress_tracker.update_progress(
+                    menu_id, "semantic_complete", 65,
+                    {"semantic_matches": len(items_with_semantic), "fallback_needed": len(items_needing_google)}
+                )
 
             # Phase 2: Google search for items without semantic matches
             if items_needing_google:
