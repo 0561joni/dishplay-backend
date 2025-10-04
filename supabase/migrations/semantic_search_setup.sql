@@ -25,7 +25,8 @@ CREATE TABLE IF NOT EXISTS items_without_pictures (
     id BIGSERIAL PRIMARY KEY,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
     title TEXT NOT NULL,
-    description TEXT
+    description TEXT,
+    processed BOOLEAN DEFAULT FALSE
 );
 
 -- Create index on created_at for efficient querying
