@@ -305,16 +305,22 @@ async def upload_menu(
             semantic_results = await search_dishes_batch(items_for_processing, top_k=3)
 
             image_results = {}
+            semantic_match_count = 0
             for item_id, matches in semantic_results.items():
                 if matches:
                     best_match = matches[0]
-                    image_results[item_id] = [(best_match['image_url'], f"semantic:{best_match['similarity']:.2f}")]
+                    image_url = best_match['image_url']
+                    similarity = best_match['similarity']
+                    image_results[item_id] = [(image_url, f"semantic:{similarity:.2f}")]
+                    semantic_match_count += 1
+                    logger.info(f"TEST MODE: {items_for_processing[semantic_match_count-1]['name']} -> semantic match (similarity: {similarity:.2f}, url: {image_url})")
                 else:
-                    # If no semantic match, use mock image
+                    # If no semantic match, use mock image (already logged to items_without_pictures)
                     mock_images = get_mock_images()
                     image_results[item_id] = [(mock_images[0], "mock")]
+                    logger.info(f"TEST MODE: No match found for item {item_id}, using mock image")
 
-            logger.info(f"TEST MODE: Found {len([r for r in image_results.values() if r[0][1].startswith('semantic')])} semantic matches")
+            logger.info(f"TEST MODE: Found {semantic_match_count}/{len(menu_item_records)} semantic matches")
         else:
             # Normal mode:
             # 1. Try semantic search first
