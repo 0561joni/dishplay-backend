@@ -302,6 +302,9 @@ async def upload_menu(
             logger.info(f"TEST MODE: Using semantic search only for {len(menu_item_records)} items")
             await progress_tracker.update_progress(menu_id, "semantic_search", 55)
 
+            # Add delay so progress screen has time to display
+            await asyncio.sleep(2.0)
+
             semantic_results = await search_dishes_batch(items_for_processing, top_k=3)
 
             image_results = {}
@@ -321,6 +324,9 @@ async def upload_menu(
                     logger.info(f"TEST MODE: No match found for item {item_id}, using mock image")
 
             logger.info(f"TEST MODE: Found {semantic_match_count}/{len(menu_item_records)} semantic matches")
+
+            # Add another delay to show progress longer
+            await asyncio.sleep(2.0)
         else:
             # Normal mode:
             # 1. Try semantic search first
@@ -511,8 +517,9 @@ async def upload_menu(
         # Deduct credits
         await deduct_user_credits(current_user["id"], credits=1)
 
-        # Small delay to ensure frontend receives all progress updates before completion
-        await asyncio.sleep(1.0)
+        # Delay to ensure frontend receives all progress updates before completion
+        # Longer delay in TEST_MODE to allow progress screen to display
+        await asyncio.sleep(3.0 if TEST_MODE else 1.0)
 
         # Mark progress as complete
         await progress_tracker.complete_task(menu_id, success=True)
