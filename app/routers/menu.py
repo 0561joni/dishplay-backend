@@ -285,6 +285,9 @@ async def upload_menu(
             items_needing_google = []
             image_results = {}
 
+            # Track start time for overall image search
+            semantic_start = datetime.utcnow()
+
             if DISABLE_SEMANTIC_SEARCH:
                 logger.info(f"Semantic search disabled - using Google search for all {len(items_for_processing)} items")
                 items_needing_google = items_for_processing
@@ -292,7 +295,6 @@ async def upload_menu(
             else:
                 logger.info(f"Phase 1: Starting semantic search for {len(items_for_processing)} items")
                 await progress_tracker.update_progress(menu_id, "semantic_search", 55)
-                semantic_start = datetime.utcnow()
 
                 semantic_results = await search_dishes_batch(items_for_processing, top_k=3)
 
