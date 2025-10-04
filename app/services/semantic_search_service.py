@@ -10,7 +10,7 @@ logger = logging.getLogger(__name__)
 
 # Configuration
 OPENAI_EMBEDDING_MODEL = "text-embedding-3-small"  # Fast and cheap OpenAI model
-SIMILARITY_THRESHOLD = 0.8  # Minimum cosine similarity for a match
+SIMILARITY_THRESHOLD = 0.7  # Minimum cosine similarity for a match
 SUPABASE_BUCKET = "dishes-photos"
 
 # Global OpenAI client
