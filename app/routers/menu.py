@@ -300,27 +300,34 @@ async def upload_menu(
         if TEST_MODE:
             # Test mode: use semantic search only (skip Google/DALL-E)
             logger.info(f"TEST MODE: Using semantic search only for {len(menu_item_records)} items")
+            logger.info(f"TEST MODE: items_for_processing IDs: {[item['id'] for item in items_for_processing]}")
             await progress_tracker.update_progress(menu_id, "semantic_search", 55)
 
             semantic_results = await search_dishes_batch(items_for_processing, top_k=3)
+            logger.info(f"TEST MODE: semantic_results keys: {list(semantic_results.keys())}")
 
             image_results = {}
             semantic_match_count = 0
             for item_id, matches in semantic_results.items():
+                logger.info(f"TEST MODE: Processing item_id={item_id}, matches={len(matches) if matches else 0}")
                 if matches:
                     best_match = matches[0]
                     image_url = best_match['image_url']
                     similarity = best_match['similarity']
                     image_results[item_id] = [(image_url, f"semantic:{similarity:.2f}")]
                     semantic_match_count += 1
-                    logger.info(f"TEST MODE: {items_for_processing[semantic_match_count-1]['name']} -> semantic match (similarity: {similarity:.2f}, url: {image_url})")
+                    # Find the item name for logging
+                    item_name = next((item['name'] for item in items_for_processing if item['id'] == item_id), 'Unknown')
+                    logger.info(f"TEST MODE: '{item_name}' -> semantic match (similarity: {similarity:.2f}, url: {image_url})")
                 else:
                     # If no semantic match, use mock image (already logged to items_without_pictures)
                     mock_images = get_mock_images()
                     image_results[item_id] = [(mock_images[0], "mock")]
-                    logger.info(f"TEST MODE: No match found for item {item_id}, using mock image")
+                    item_name = next((item['name'] for item in items_for_processing if item['id'] == item_id), 'Unknown')
+                    logger.info(f"TEST MODE: No match found for '{item_name}' (ID: {item_id}), using mock image")
 
             logger.info(f"TEST MODE: Found {semantic_match_count}/{len(menu_item_records)} semantic matches")
+            logger.info(f"TEST MODE: image_results keys: {list(image_results.keys())}")
         else:
             # Normal mode:
             # 1. Try semantic search first
@@ -437,6 +444,9 @@ async def upload_menu(
             image_urls = []
             item_results = image_results.get(menu_item_id, [])
             image_sources = []
+
+            if TEST_MODE:
+                logger.info(f"TEST MODE: Processing menu_item_id={menu_item_id}, found {len(item_results)} image(s)")
 
             # Get results for this item
             if item_results:
