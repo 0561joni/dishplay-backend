@@ -97,16 +97,41 @@ def load_embeddings_and_metadata(csv_path, embeddings_dir):
 
     print(f"\nSuccessfully matched {len(merged)} records")
 
+    # After merge, we might have suffixes. Let's clean up the columns
+    # Prefer _meta suffix (from prompts_meta CSV) for metadata columns
+    # and keep embedding from embeddings dataframe
+    result = pd.DataFrame()
+
+    # Get the right columns, handling potential suffixes
+    if 'name_opt_meta' in merged.columns:
+        result['name_opt'] = merged['name_opt_meta']
+    elif 'name_opt' in merged.columns:
+        result['name_opt'] = merged['name_opt']
+
+    result['title'] = merged['title']
+
+    if 'description_meta' in merged.columns:
+        result['description'] = merged['description_meta']
+    elif 'description' in merged.columns:
+        result['description'] = merged['description']
+
+    if 'type_meta' in merged.columns:
+        result['type'] = merged['type_meta']
+    elif 'type' in merged.columns:
+        result['type'] = merged['type']
+
+    result['embedding'] = merged['embedding']
+
     # Check for required columns
     required = ['name_opt', 'title', 'description', 'type', 'embedding']
-    missing = [col for col in required if col not in merged.columns]
+    missing = [col for col in required if col not in result.columns]
 
     if missing:
         print(f"\nError: Missing required columns: {missing}")
-        print(f"Available columns: {list(merged.columns)}")
+        print(f"Available columns: {list(result.columns)}")
         return None
 
-    return merged
+    return result
 
 
 def upload_to_supabase(df):
@@ -205,17 +230,17 @@ def main():
     df = load_embeddings_and_metadata(args.csv_path, args.embeddings_dir)
 
     if df is None:
-        print("\n✗ Failed to load data")
+        print("\n[ERROR] Failed to load data")
         return 1
 
     # Upload to Supabase
     success = upload_to_supabase(df)
 
     if success:
-        print("\n✓ All embeddings uploaded successfully!")
+        print("\n[SUCCESS] All embeddings uploaded successfully!")
         return 0
     else:
-        print("\n✗ Some embeddings failed to upload. Check errors above.")
+        print("\n[ERROR] Some embeddings failed to upload. Check errors above.")
         return 1
 
 
