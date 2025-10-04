@@ -3,46 +3,29 @@ import os
 import logging
 import numpy as np
 from typing import List, Dict, Tuple, Optional
-from sentence_transformers import SentenceTransformer
-import torch
+from openai import OpenAI
 from app.core.supabase_client import get_supabase_client
 
 logger = logging.getLogger(__name__)
 
 # Configuration
-MODEL_NAME = "BAAI/bge-m3"
+OPENAI_EMBEDDING_MODEL = "text-embedding-3-small"  # Fast and cheap OpenAI model
 SIMILARITY_THRESHOLD = 0.8  # Minimum cosine similarity for a match
 SUPABASE_BUCKET = "dishes-photos"
 
-# Global model instance (loaded once)
-_model = None
-_model_lock = False
+# Global OpenAI client
+_openai_client = None
 
 
-def get_embedding_model():
-    """Load and cache the sentence transformer model"""
-    global _model, _model_lock
-
-    if _model is not None:
-        return _model
-
-    # Prevent multiple threads from loading simultaneously
-    if _model_lock:
-        # Wait for the other thread to finish loading
-        import time
-        while _model_lock and _model is None:
-            time.sleep(0.1)
-        return _model
-
-    try:
-        _model_lock = True
-        logger.info(f"Loading embedding model: {MODEL_NAME}")
-        device = "cuda" if torch.cuda.is_available() else "cpu"
-        _model = SentenceTransformer(MODEL_NAME, device=device)
-        logger.info(f"Model loaded successfully on {device}")
-        return _model
-    finally:
-        _model_lock = False
+def get_openai_client():
+    """Get or create OpenAI client"""
+    global _openai_client
+    if _openai_client is None:
+        api_key = os.getenv("OPENAI_API_KEY")
+        if not api_key:
+            raise ValueError("OPENAI_API_KEY not set")
+        _openai_client = OpenAI(api_key=api_key)
+    return _openai_client
 
 
 async def search_similar_dishes(
@@ -71,16 +54,13 @@ async def search_similar_dishes(
 
         logger.info(f"Searching for similar dishes: '{query_text[:100]}...'")
 
-        # Generate embedding for the query
-        model = get_embedding_model()
-        query_embedding = model.encode(
-            [query_text],
-            normalize_embeddings=True,
-            convert_to_numpy=True
-        )[0]
-
-        # Convert to list for JSON serialization
-        query_embedding_list = query_embedding.tolist()
+        # Generate embedding for the query using OpenAI
+        client = get_openai_client()
+        response = client.embeddings.create(
+            model=OPENAI_EMBEDDING_MODEL,
+            input=query_text
+        )
+        query_embedding_list = response.data[0].embedding
 
         # Query Supabase using pgvector similarity search
         supabase = get_supabase_client()
@@ -219,21 +199,20 @@ async def search_dishes_batch(
     return results
 
 
-def generate_embedding_for_text(text: str) -> np.ndarray:
+def generate_embedding_for_text(text: str) -> List[float]:
     """
-    Generate normalized embedding for a given text.
+    Generate embedding for a given text using OpenAI.
     Useful for creating embeddings to upload to Supabase.
 
     Args:
         text: Text to embed
 
     Returns:
-        Normalized embedding as numpy array
+        Embedding as list of floats
     """
-    model = get_embedding_model()
-    embedding = model.encode(
-        [text],
-        normalize_embeddings=True,
-        convert_to_numpy=True
-    )[0]
-    return embedding
+    client = get_openai_client()
+    response = client.embeddings.create(
+        model=OPENAI_EMBEDDING_MODEL,
+        input=text
+    )
+    return response.data[0].embedding
