@@ -86,13 +86,15 @@ app = FastAPI(
 
 app.add_middleware(RequestSizeLimitMiddleware)
 
-# Configure CORS - you can adjust these settings based on your frontend domain
+# Configure CORS - allow all origins for now
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # In production, replace with your frontend URL
+    allow_origins=["*"],  # Allows all origins
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["*"],  # Allows all methods including OPTIONS
+    allow_headers=["*"],  # Allows all headers
+    expose_headers=["*"],  # Expose all headers to the client
+    max_age=3600,  # Cache preflight requests for 1 hour
 )
 
 # Include routers
