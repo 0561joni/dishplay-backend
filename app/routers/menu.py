@@ -12,7 +12,8 @@ from app.core.auth import get_current_user, verify_user_credits, deduct_user_cre
 from app.services.image_processor import process_and_optimize_image, validate_image_file
 from app.services.openai_service import extract_menu_items
 from app.services.google_search_service import search_images_batch
-from app.services.dalle_service import get_fallback_image
+from app.services.dalle_service import get_fallback_image, generate_images_batch
+from app.services.semantic_search_service import search_dishes_batch
 from app.core.async_supabase import async_supabase_client
 from app.models.menu import MenuResponse, MenuItem
 from app.services.progress_tracker import progress_tracker
@@ -260,26 +261,116 @@ async def upload_menu(
             mock_images = get_mock_images()
             image_results = {record[0]: [(mock_images[0], "mock")] for record in menu_item_records}
         else:
-            # Normal mode: generate images using batch processing
-            items_for_generation = []
+            # Normal mode:
+            # 1. Try semantic search first
+            # 2. Fall back to Google search for items without good matches
+            # 3. Use DALL-E as last resort
+
+            items_for_processing = []
             for menu_item_id, menu_item_data, item in menu_item_records:
                 item_name = item.get('name_en', item['name'])
                 description = item.get('description_en') or item.get('description')
 
-                items_for_generation.append({
+                items_for_processing.append({
                     'id': menu_item_id,
                     'name': item_name,
                     'description': description
                 })
 
-            logger.info(f"Starting batch image search for {len(items_for_generation)} items")
-            await progress_tracker.update_progress(menu_id, "searching_images", 55)
-            search_start = datetime.utcnow()
+            # Phase 1: Semantic search
+            logger.info(f"Phase 1: Starting semantic search for {len(items_for_processing)} items")
+            await progress_tracker.update_progress(menu_id, "semantic_search", 55)
+            semantic_start = datetime.utcnow()
 
-            image_results = await search_images_batch(items_for_generation, limit_per_item=3)
+            semantic_results = await search_dishes_batch(items_for_processing, top_k=3)
 
-            search_time = (datetime.utcnow() - search_start).total_seconds()
-            logger.info(f"Batch image search completed in {search_time:.2f}s")
+            semantic_time = (datetime.utcnow() - semantic_start).total_seconds()
+            logger.info(f"Semantic search completed in {semantic_time:.2f}s")
+
+            # Separate items into those with semantic matches and those needing fallback
+            items_with_semantic = []
+            items_needing_google = []
+            image_results = {}
+
+            for item in items_for_processing:
+                item_id = item['id']
+                matches = semantic_results.get(item_id, [])
+
+                if matches:
+                    # Use semantic search results (top 3 images)
+                    image_urls = [(match['image_url'], f"semantic:{match['similarity']:.2f}")
+                                  for match in matches]
+                    image_results[item_id] = image_urls
+                    items_with_semantic.append(item)
+                    logger.info(f"✓ Semantic match for '{item['name']}': {len(matches)} results")
+                else:
+                    # No good semantic match - need Google search
+                    items_needing_google.append(item)
+                    logger.info(f"✗ No semantic match for '{item['name']}' - will use Google search")
+
+            logger.info(f"Semantic search: {len(items_with_semantic)} matched, {len(items_needing_google)} need fallback")
+            await progress_tracker.update_progress(
+                menu_id, "semantic_complete", 65,
+                {"semantic_matches": len(items_with_semantic), "fallback_needed": len(items_needing_google)}
+            )
+
+            # Phase 2: Google search for items without semantic matches
+            if items_needing_google:
+                logger.info(f"Phase 2: Starting Google search for {len(items_needing_google)} items")
+                await progress_tracker.update_progress(menu_id, "google_search", 70)
+                google_start = datetime.utcnow()
+
+                google_results = await search_images_batch(items_needing_google, limit_per_item=3)
+
+                google_time = (datetime.utcnow() - google_start).total_seconds()
+                logger.info(f"Google search completed in {google_time:.2f}s")
+
+                # Separate items with Google results from those needing DALL-E
+                items_needing_dalle = []
+
+                for item in items_needing_google:
+                    item_id = item['id']
+                    google_imgs = google_results.get(item_id, [])
+
+                    if google_imgs:
+                        image_results[item_id] = google_imgs
+                        logger.info(f"✓ Google found {len(google_imgs)} images for '{item['name']}'")
+                    else:
+                        items_needing_dalle.append(item)
+                        logger.info(f"✗ Google found no images for '{item['name']}' - will use DALL-E")
+
+                await progress_tracker.update_progress(
+                    menu_id, "google_complete", 75,
+                    {"google_matches": len(items_needing_google) - len(items_needing_dalle),
+                     "dalle_needed": len(items_needing_dalle)}
+                )
+
+                # Phase 3: DALL-E generation for remaining items
+                if items_needing_dalle:
+                    logger.info(f"Phase 3: Generating images with DALL-E for {len(items_needing_dalle)} items")
+                    await progress_tracker.update_progress(menu_id, "dalle_generation", 78)
+                    dalle_start = datetime.utcnow()
+
+                    dalle_results = await generate_images_batch(items_needing_dalle, limit_per_item=1)
+
+                    dalle_time = (datetime.utcnow() - dalle_start).total_seconds()
+                    logger.info(f"DALL-E generation completed in {dalle_time:.2f}s")
+
+                    # Add DALL-E results
+                    for item in items_needing_dalle:
+                        item_id = item['id']
+                        dalle_imgs = dalle_results.get(item_id, [])
+
+                        if dalle_imgs:
+                            image_results[item_id] = dalle_imgs
+                            logger.info(f"✓ DALL-E generated image for '{item['name']}'")
+                        else:
+                            # Ultimate fallback - no results from any source
+                            image_results[item_id] = []
+                            logger.warning(f"✗ All sources failed for '{item['name']}'")
+
+            search_time = (datetime.utcnow() - semantic_start).total_seconds()
+            logger.info(f"Total image acquisition completed in {search_time:.2f}s")
 
         # Process results and prepare image records
         all_image_records = []
