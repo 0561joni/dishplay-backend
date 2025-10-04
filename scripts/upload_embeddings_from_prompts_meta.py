@@ -141,7 +141,7 @@ def upload_to_supabase(df):
     supabase = get_supabase_client()
 
     print("Preparing records for upload...")
-    batch_size = 100
+    batch_size = 500  # Increased from 100 to 500 for faster uploads
     total_uploaded = 0
     errors = 0
 
@@ -167,29 +167,53 @@ def upload_to_supabase(df):
 
         # Upload batch
         try:
+            import time
+            start_time = time.time()
+
             response = supabase.table('dish_embeddings').upsert(
                 records,
                 on_conflict='name_opt'
             ).execute()
 
             total_uploaded += len(records)
-            print(f"Uploaded batch {i//batch_size + 1}/{(len(df)-1)//batch_size + 1} "
-                  f"({total_uploaded}/{len(df)} records)")
+            elapsed = time.time() - start_time
+
+            batch_num = i//batch_size + 1
+            total_batches = (len(df)-1)//batch_size + 1
+
+            print(f"Uploaded batch {batch_num}/{total_batches} "
+                  f"({total_uploaded}/{len(df)} records) "
+                  f"- {elapsed:.1f}s")
 
         except Exception as e:
             print(f"Error uploading batch {i//batch_size + 1}: {str(e)}")
 
-            # Try uploading one by one for this batch
-            for record in records:
-                try:
-                    supabase.table('dish_embeddings').upsert(
-                        [record],
-                        on_conflict='name_opt'
-                    ).execute()
-                    total_uploaded += 1
-                except Exception as record_error:
-                    print(f"  Error with record '{record['name_opt']}': {str(record_error)}")
-                    errors += 1
+            # For large batches, try splitting in half instead of one by one
+            if len(records) > 50:
+                print(f"  Retrying with smaller batches...")
+                mid = len(records) // 2
+                for sub_batch in [records[:mid], records[mid:]]:
+                    try:
+                        supabase.table('dish_embeddings').upsert(
+                            sub_batch,
+                            on_conflict='name_opt'
+                        ).execute()
+                        total_uploaded += len(sub_batch)
+                    except Exception as sub_error:
+                        print(f"  Sub-batch also failed: {str(sub_error)}")
+                        errors += len(sub_batch)
+            else:
+                # Try uploading one by one for small batches
+                for record in records:
+                    try:
+                        supabase.table('dish_embeddings').upsert(
+                            [record],
+                            on_conflict='name_opt'
+                        ).execute()
+                        total_uploaded += 1
+                    except Exception as record_error:
+                        print(f"  Error with record '{record['name_opt']}': {str(record_error)}")
+                        errors += 1
 
     print(f"\n{'='*60}")
     print(f"Upload Summary")
