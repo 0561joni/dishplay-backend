@@ -135,8 +135,9 @@ class ProgressTracker:
         async with self._lock:
             data = self._progress_data.get(task_id)
             if data:
-                # Create a copy to avoid modification
-                return {
+                # Create a copy with all necessary fields for frontend
+                result = {
+                    "menu_id": task_id,  # Include menu_id
                     "status": data["status"],
                     "stage": data["stage"],
                     "progress": data["progress"],
@@ -146,6 +147,14 @@ class ProgressTracker:
                     "menu_title": data.get("menu_title"),
                     "elapsed_time": (datetime.utcnow() - data["started_at"]).total_seconds()
                 }
+
+                # Include optional fields if they exist
+                if "items_snapshot" in data:
+                    result["items_snapshot"] = data["items_snapshot"]
+                if "item_image_update" in data:
+                    result["item_image_update"] = data["item_image_update"]
+
+                return result
             return None
     
     async def subscribe(self, task_id: str, callback):
@@ -161,9 +170,27 @@ class ProgressTracker:
     
     async def _notify_subscribers(self, task_id: str, data: Dict[str, Any]):
         """Notify all subscribers of progress update"""
+        # Prepare the notification data with menu_id
+        notification_data = {
+            "menu_id": task_id,
+            "status": data["status"],
+            "stage": data["stage"],
+            "progress": data["progress"],
+            "message": data["message"],
+            "estimated_time_remaining": data.get("estimated_time_remaining", 0),
+            "item_count": data.get("item_count", 0),
+            "menu_title": data.get("menu_title"),
+        }
+
+        # Include optional fields if they exist
+        if "items_snapshot" in data:
+            notification_data["items_snapshot"] = data["items_snapshot"]
+        if "item_image_update" in data:
+            notification_data["item_image_update"] = data["item_image_update"]
+
         for callback in self._subscribers.get(task_id, []):
             try:
-                await callback(data)
+                await callback(notification_data)
             except Exception as e:
                 logger.error(f"Error notifying subscriber: {e}")
 
