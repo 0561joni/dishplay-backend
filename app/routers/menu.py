@@ -150,7 +150,16 @@ async def upload_menu(
         })
         
         logger.info(f"Created menu record {menu_id} for user {current_user['id']}")
-        await progress_tracker.update_progress(menu_id, "initializing", 5)
+        # Send initial progress update immediately so frontend can connect
+        await progress_tracker.update_progress(
+            menu_id,
+            "initializing",
+            5,
+            {
+                "menu_id": menu_id,
+                "menu_title": "Uploaded Menu"
+            }
+        )
     except Exception as e:
         logger.error(f"Failed to create menu record: {str(e)}")
         raise HTTPException(
@@ -201,9 +210,26 @@ async def upload_menu(
             logger.warning(f"Failed to update menu title for {menu_id}: {update_error}")
 
         if extracted_items:
+            # Create items snapshot immediately after extraction for frontend
+            placeholder_items = []
+            for index, item in enumerate(extracted_items):
+                item_name = item.get("name") or item.get("item_name", f"Item {index + 1}")
+                placeholder_items.append({
+                    "id": str(uuid.uuid4()),
+                    "name": item_name,
+                    "description": item.get("description"),
+                    "price": item.get("price"),
+                    "currency": item.get("currency", extraction_result.get("currency", "USD")),
+                    "order_index": index
+                })
+
             await progress_tracker.update_progress(
                 menu_id, "menu_extracted", 40,
-                {"item_count": len(extracted_items), "menu_title": menu_title}
+                {
+                    "item_count": len(extracted_items),
+                    "menu_title": menu_title,
+                    "items_snapshot": placeholder_items  # Send snapshot early
+                }
             )
 
         if not extracted_items:
@@ -463,7 +489,10 @@ async def upload_menu(
         
         # Deduct credits
         await deduct_user_credits(current_user["id"], credits=1)
-        
+
+        # Small delay to ensure frontend receives all progress updates before completion
+        await asyncio.sleep(1.0)
+
         # Mark progress as complete
         await progress_tracker.complete_task(menu_id, success=True)
         
