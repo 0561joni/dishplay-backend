@@ -284,27 +284,42 @@ async def upload_menu(
         )
         await async_supabase_client.table_insert("menu_items", menu_items_to_insert)
         await progress_tracker.update_progress(menu_id, "items_saved", 50)
+
+        # Prepare items for processing (both test and normal mode)
+        items_for_processing = []
+        for menu_item_id, menu_item_data, item in menu_item_records:
+            item_name = item.get('name_en', item['name'])
+            description = item.get('description_en') or item.get('description')
+
+            items_for_processing.append({
+                'id': menu_item_id,
+                'name': item_name,
+                'description': description
+            })
+
         if TEST_MODE:
-            # Test mode: use mock images
-            logger.info(f"TEST MODE: Using mock images for {len(menu_item_records)} items")
-            mock_images = get_mock_images()
-            image_results = {record[0]: [(mock_images[0], "mock")] for record in menu_item_records}
+            # Test mode: use semantic search only (skip Google/DALL-E)
+            logger.info(f"TEST MODE: Using semantic search only for {len(menu_item_records)} items")
+            await progress_tracker.update_progress(menu_id, "semantic_search", 55)
+
+            semantic_results = await search_dishes_batch(items_for_processing, top_k=3)
+
+            image_results = {}
+            for item_id, matches in semantic_results.items():
+                if matches:
+                    best_match = matches[0]
+                    image_results[item_id] = [(best_match['image_url'], f"semantic:{best_match['similarity']:.2f}")]
+                else:
+                    # If no semantic match, use mock image
+                    mock_images = get_mock_images()
+                    image_results[item_id] = [(mock_images[0], "mock")]
+
+            logger.info(f"TEST MODE: Found {len([r for r in image_results.values() if r[0][1].startswith('semantic')])} semantic matches")
         else:
             # Normal mode:
             # 1. Try semantic search first
             # 2. Fall back to Google search for items without good matches
             # 3. Use DALL-E as last resort
-
-            items_for_processing = []
-            for menu_item_id, menu_item_data, item in menu_item_records:
-                item_name = item.get('name_en', item['name'])
-                description = item.get('description_en') or item.get('description')
-
-                items_for_processing.append({
-                    'id': menu_item_id,
-                    'name': item_name,
-                    'description': description
-                })
 
             # Phase 1: Semantic search (skip if disabled)
             items_with_semantic = []
