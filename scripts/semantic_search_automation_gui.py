@@ -230,33 +230,33 @@ class SemanticSearchGUI:
         """Flow 2 worker thread"""
         try:
             self.log("=" * 80)
-            self.log("FLOW 2: Generate & Upload Embeddings", "INFO")
+            self.log("FLOW 2: Generate & Upload New Embeddings", "INFO")
             self.log("=" * 80)
 
             # Step 1: Check if prompts_meta.csv exists
             if not PROMPTS_META_CSV.exists():
                 raise FileNotFoundError(f"prompts_meta.csv not found at {PROMPTS_META_CSV}")
 
-            # Step 2: Clear old embeddings from Supabase
-            self.log("Step 1/3: Clearing old embeddings from Supabase...", "INFO")
-            self._clear_old_embeddings()
-            self.log("Old embeddings cleared", "SUCCESS")
+            # Step 2: Filter out items that already exist in Supabase
+            self.log("Step 1/3: Checking for existing embeddings in Supabase...", "INFO")
+            new_items_csv = self._filter_new_items()
+            self.log(f"Filtered to new items only", "SUCCESS")
 
-            # Step 3: Generate embeddings
-            self.log("Step 2/3: Generating embeddings...", "INFO")
-            self.log("This may take several minutes depending on dataset size...", "INFO")
-            self._run_embed_script()
+            # Step 3: Generate embeddings for new items
+            self.log("Step 2/3: Generating embeddings for new items...", "INFO")
+            self.log("This may take several minutes depending on number of new items...", "INFO")
+            self._run_embed_script_on_file(new_items_csv)
             self.log("Embeddings generated successfully!", "SUCCESS")
 
-            # Step 4: Upload embeddings to Supabase
-            self.log("Step 3/3: Uploading embeddings to Supabase...", "INFO")
+            # Step 4: Upload only new embeddings to Supabase (append mode)
+            self.log("Step 3/3: Uploading new embeddings to Supabase...", "INFO")
             self._run_upload_script()
-            self.log("Embeddings uploaded successfully!", "SUCCESS")
+            self.log("New embeddings uploaded successfully!", "SUCCESS")
 
             self.log("=" * 80)
             self.log("FLOW 2 COMPLETED SUCCESSFULLY!", "SUCCESS")
             self.log("=" * 80)
-            self.log("Semantic search is now updated and ready to use!", "INFO")
+            self.log("Semantic search is now updated with new dishes!", "INFO")
 
             self._finish_flow(success=True)
 
@@ -399,6 +399,91 @@ class SemanticSearchGUI:
             raise Exception(f"Failed to mark items as processed: {str(e)}")
 
     # ========== Flow 2 Helper Methods ==========
+
+    def _filter_new_items(self):
+        """Filter prompts_meta.csv to only include items not in Supabase"""
+        import csv
+
+        # Get existing name_opt values from Supabase
+        try:
+            supabase = get_supabase_client()
+            response = supabase.table('dish_embeddings') \
+                .select('name_opt') \
+                .execute()
+
+            existing_names = {item['name_opt'] for item in response.data} if response.data else set()
+            self.log(f"Found {len(existing_names)} existing dishes in database", "INFO")
+
+        except Exception as e:
+            self.log(f"Warning: Could not fetch existing embeddings: {str(e)}", "INFO")
+            existing_names = set()
+
+        # Read prompts_meta.csv
+        with open(PROMPTS_META_CSV, 'r', encoding='utf-8', newline='') as f:
+            reader = csv.DictReader(f)
+            all_prompts = list(reader)
+
+        self.log(f"Loaded {len(all_prompts)} items from prompts_meta.csv", "INFO")
+
+        # Filter to only new items
+        new_items = []
+        for item in all_prompts:
+            item_name = item.get('name', item.get('name_opt', ''))
+            if item_name not in existing_names:
+                new_items.append(item)
+
+        self.log(f"Found {len(new_items)} new items to process", "INFO")
+
+        if not new_items:
+            raise Exception("No new items to process. All items already exist in database.")
+
+        # Write new items to a temporary CSV
+        new_items_csv = PROMPTS_META_CSV.parent / "prompts_meta_new.csv"
+        with open(new_items_csv, 'w', encoding='utf-8', newline='') as f:
+            if new_items:
+                fieldnames = list(new_items[0].keys())
+                writer = csv.DictWriter(f, fieldnames=fieldnames)
+                writer.writeheader()
+                writer.writerows(new_items)
+
+        return new_items_csv
+
+    def _run_embed_script_on_file(self, csv_file):
+        """Run embedding generation script on specific CSV file"""
+        import shutil
+
+        if not EMBED_SCRIPT.exists():
+            raise FileNotFoundError(f"Embed script not found at {EMBED_SCRIPT}")
+
+        if not csv_file.exists():
+            raise FileNotFoundError(f"CSV file not found at {csv_file}")
+
+        # Backup original prompts_meta.csv and replace with filtered version
+        original_csv = CLEAN_DISH_DIR / "prompts_meta.csv"
+        backup_csv = CLEAN_DISH_DIR / "prompts_meta_backup.csv"
+
+        if original_csv.exists():
+            shutil.copy(original_csv, backup_csv)
+            self.log(f"Backed up original prompts_meta.csv", "INFO")
+
+        shutil.copy(csv_file, original_csv)
+        self.log(f"Copied filtered CSV to {original_csv}", "INFO")
+
+        # Run embed script
+        result = subprocess.run(
+            [sys.executable, str(EMBED_SCRIPT)],
+            cwd=str(CLEAN_DISH_DIR),
+            capture_output=True,
+            text=True
+        )
+
+        if result.returncode != 0:
+            raise Exception(f"Embed script failed:\n{result.stderr}")
+
+        # Log output
+        for line in result.stdout.split('\n'):
+            if line.strip():
+                self.log(line, "INFO")
 
     def _clear_old_embeddings(self):
         """Clear old embeddings from Supabase"""

@@ -139,6 +139,7 @@ async def log_missing_dish(
 ) -> None:
     """
     Log a dish that didn't have a close semantic match to items_without_pictures table.
+    Checks for duplicates before inserting.
 
     Args:
         title: Name of the dish
@@ -147,13 +148,25 @@ async def log_missing_dish(
     try:
         supabase = get_supabase_client()
 
+        # Check if this item already exists (by title and description)
+        desc = description or ""
+        existing = supabase.table("items_without_pictures") \
+            .select("id") \
+            .eq("title", title) \
+            .eq("description", desc) \
+            .execute()
+
+        if existing.data and len(existing.data) > 0:
+            logger.info(f"Dish already in items_without_pictures: {title}")
+            return
+
         # Insert into items_without_pictures table
         response = supabase.table("items_without_pictures").insert({
             "title": title,
-            "description": description or ""
+            "description": desc
         }).execute()
 
-        logger.info(f"Logged missing dish: {title}")
+        logger.info(f"Logged new missing dish: {title}")
 
     except Exception as e:
         logger.error(f"Error logging missing dish: {str(e)}")
