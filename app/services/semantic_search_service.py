@@ -83,8 +83,8 @@ async def search_similar_dishes(
 
         results = []
         for row in response.data:
-            # Build image URL from Supabase storage
-            image_url = get_image_url_from_storage(row['name_opt'])
+            # Build image URLs from Supabase storage (try multiple patterns)
+            image_urls = get_image_urls_from_storage(row['name_opt'])
 
             results.append({
                 'name_opt': row['name_opt'],
@@ -92,7 +92,7 @@ async def search_similar_dishes(
                 'description': row['description'],
                 'type': row['type'],
                 'similarity': row['similarity'],
-                'image_url': image_url
+                'image_url': image_urls[0] if image_urls else ''  # Primary URL
             })
 
             logger.info(
@@ -108,41 +108,49 @@ async def search_similar_dishes(
         return []
 
 
-def get_image_url_from_storage(name_opt: str) -> str:
+def get_image_urls_from_storage(name_opt: str) -> List[str]:
     """
-    Get public URL for an image from Supabase storage.
+    Get possible public URLs for an image from Supabase storage.
 
     The name_opt format is: {id}-{sequence}-{dish-name}_{description}
     e.g., 5334-0004-yaki-udon-organic-tofu_fried-udon-noodles-with-vegetables-egg-teriyaki
 
-    Images are stored with _00001_.png suffix appended to the full name_opt.
+    Images may have different suffixes or none at all, so we return multiple possible URLs.
 
     Args:
         name_opt: The name_opt identifier from the database
 
     Returns:
-        Public URL to the image
+        List of possible URLs (in order of likelihood)
     """
     try:
         supabase = get_supabase_client()
 
-        # The actual filename pattern includes the full name_opt plus suffix
-        # Example: 5334-0004-yaki-udon-organic-tofu_fried-udon-noodles-with-vegetables-egg-teriyaki_00001_.png
-        filename = f"{name_opt}_00001_.png"
-        file_path = f"{SUPABASE_FOLDER}/{filename}"
+        # Try different filename patterns in order of likelihood
+        patterns = [
+            f"{name_opt}_00001_.png",       # Most common: with _00001_ suffix
+            f"{name_opt}.png",              # Without suffix
+            f"{name_opt}_00001_.jpg",       # JPG with suffix
+            f"{name_opt}.jpg",              # JPG without suffix
+        ]
 
-        public_url = supabase.storage.from_(SUPABASE_BUCKET).get_public_url(file_path)
+        urls = []
+        for pattern in patterns:
+            file_path = f"{SUPABASE_FOLDER}/{pattern}"
+            public_url = supabase.storage.from_(SUPABASE_BUCKET).get_public_url(file_path)
 
-        # Remove trailing '?' that Supabase client adds
-        if public_url.endswith('?'):
-            public_url = public_url[:-1]
+            # Remove trailing '?' that Supabase client adds
+            if public_url.endswith('?'):
+                public_url = public_url[:-1]
 
-        logger.info(f"Generated image URL for {name_opt}: {public_url}")
-        return public_url
+            urls.append(public_url)
+
+        logger.info(f"Generated {len(urls)} possible URLs for {name_opt}")
+        return urls
 
     except Exception as e:
-        logger.error(f"Error getting image URL for {name_opt}: {str(e)}")
-        return ""
+        logger.error(f"Error getting image URLs for {name_opt}: {str(e)}")
+        return []
 
 
 async def log_missing_dish(
