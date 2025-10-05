@@ -4,7 +4,7 @@ Script to upload dish embeddings to Supabase from prompts_meta CSV.
 This script reads embeddings and the prompts_meta CSV file and uploads
 them to the Supabase dish_embeddings table.
 
-The prompts_meta CSV has columns: name_opt, title, description, type
+The prompts_meta CSV has columns: name (or name_opt for legacy), title, description, type
 
 Usage:
     python scripts/upload_embeddings_from_prompts_meta.py --csv-path path/to/prompts_meta.csv
@@ -103,7 +103,12 @@ def load_embeddings_and_metadata(csv_path, embeddings_dir):
     result = pd.DataFrame()
 
     # Get the right columns, handling potential suffixes
-    if 'name_opt_meta' in merged.columns:
+    # Support both 'name' and 'name_opt' for backwards compatibility
+    if 'name_meta' in merged.columns:
+        result['name_opt'] = merged['name_meta']
+    elif 'name' in merged.columns:
+        result['name_opt'] = merged['name']
+    elif 'name_opt_meta' in merged.columns:
         result['name_opt'] = merged['name_opt_meta']
     elif 'name_opt' in merged.columns:
         result['name_opt'] = merged['name_opt']

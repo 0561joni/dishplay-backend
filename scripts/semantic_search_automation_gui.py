@@ -30,8 +30,9 @@ load_dotenv()
 
 # Paths
 BACKEND_DIR = Path(__file__).parent.parent
-CSV_TO_TEXT_DIR = BACKEND_DIR.parent / "CSV-to-structured-text"
-CLEAN_DISH_DIR = BACKEND_DIR.parent / "Clean-dish-list"
+HELPER_DIR = BACKEND_DIR.parent / "dishplay-helper"
+CSV_TO_TEXT_DIR = HELPER_DIR / "CSV-to-structured-text"
+CLEAN_DISH_DIR = HELPER_DIR / "Clean-dish-list"
 PROMPTS_META_CSV = CSV_TO_TEXT_DIR / "prompts_meta.csv"
 INPUT_CSV = CSV_TO_TEXT_DIR / "input.csv"
 OLLAMA_SCRIPT = CSV_TO_TEXT_DIR / "csv_to_prompts_ollama.py"
@@ -68,7 +69,7 @@ class SemanticSearchGUI:
         # Flow 1 Button
         self.flow1_btn = ttk.Button(
             button_frame,
-            text="Flow 1: Generate Prompts for Unmatched Items",
+            text="Flow 1: Generate Prompts (All Items)",
             command=self.run_flow1,
             width=40
         )
@@ -169,33 +170,39 @@ class SemanticSearchGUI:
         """Flow 1 worker thread"""
         try:
             self.log("=" * 80)
-            self.log("FLOW 1: Generate Prompts for Unmatched Items", "INFO")
+            self.log("FLOW 1: Generate Prompts from items_without_pictures", "INFO")
             self.log("=" * 80)
 
-            # Step 1: Fetch unmatched items from Supabase
-            self.log("Step 1/4: Fetching unmatched items from Supabase...", "INFO")
+            # Step 1: Fetch all items from items_without_pictures table
+            self.log("Step 1/5: Fetching all items from items_without_pictures...", "INFO")
             unmatched_items = self._fetch_unmatched_items()
 
             if not unmatched_items:
-                self.log("No unmatched items found!", "SUCCESS")
+                self.log("No items found in items_without_pictures table!", "SUCCESS")
                 self._finish_flow(success=True)
                 return
 
-            self.log(f"Found {len(unmatched_items)} unmatched items", "SUCCESS")
+            # Count processed vs unprocessed
+            processed_count = sum(1 for item in unmatched_items if item.get('processed', False))
+            unprocessed_count = len(unmatched_items) - processed_count
+
+            self.log(f"Found {len(unmatched_items)} total items:", "SUCCESS")
+            self.log(f"  - {unprocessed_count} unprocessed items", "INFO")
+            self.log(f"  - {processed_count} already processed items", "INFO")
 
             # Step 2: Create input CSV for Ollama script
-            self.log("Step 2/4: Creating input CSV for Ollama...", "INFO")
+            self.log("Step 2/5: Creating input CSV for Ollama...", "INFO")
             self._create_input_csv(unmatched_items)
             self.log(f"Created input CSV: {INPUT_CSV}", "SUCCESS")
 
             # Step 3: Run Ollama script to generate prompts
-            self.log("Step 3/4: Running Ollama to generate prompts...", "INFO")
+            self.log("Step 3/5: Running Ollama to generate prompts...", "INFO")
             self.log("This may take several minutes depending on the number of items...", "INFO")
             self._run_ollama_script()
             self.log("Prompts generated successfully!", "SUCCESS")
 
             # Step 4: Update prompts_meta.csv with new entries
-            self.log("Step 4/4: Updating prompts_meta.csv...", "INFO")
+            self.log("Step 4/5: Updating prompts_meta.csv...", "INFO")
             self._update_prompts_meta()
             self.log(f"Updated {PROMPTS_META_CSV}", "SUCCESS")
 
@@ -272,17 +279,25 @@ class SemanticSearchGUI:
     # ========== Flow 1 Helper Methods ==========
 
     def _fetch_unmatched_items(self):
-        """Fetch unmatched items from Supabase"""
+        """Fetch all items from items_without_pictures table"""
         try:
+            self.log("Connecting to Supabase...", "INFO")
             supabase = get_supabase_client()
+
+            # Fetch ALL items regardless of processed status
+            self.log("Fetching all rows from items_without_pictures table...", "INFO")
             response = supabase.table('items_without_pictures') \
-                .select('id, title, description') \
-                .eq('processed', False) \
+                .select('id, title, description, processed') \
                 .execute()
+
+            self.log(f"Raw response: {response}", "INFO")
+            self.log(f"Response data type: {type(response.data)}", "INFO")
+            self.log(f"Number of items fetched: {len(response.data) if response.data else 0}", "INFO")
 
             return response.data
         except Exception as e:
-            raise Exception(f"Failed to fetch unmatched items: {str(e)}")
+            self.log(f"Exception details: {str(e)}", "ERROR")
+            raise Exception(f"Failed to fetch items from items_without_pictures: {str(e)}")
 
     def _create_input_csv(self, items):
         """Create input.csv for Ollama script"""
@@ -350,19 +365,20 @@ class SemanticSearchGUI:
             reader = csv.DictReader(f)
             all_rows = list(reader)
 
-        # Deduplicate by name_opt
+        # Deduplicate by name
         seen = set()
         unique_rows = []
         for row in all_rows:
-            name_opt = row.get('name_opt', '')
-            if name_opt not in seen:
-                seen.add(name_opt)
+            name = row.get('name', '')
+            if name not in seen:
+                seen.add(name)
                 unique_rows.append(row)
 
         # Write back deduplicated data
         with open(PROMPTS_META_CSV, 'w', encoding='utf-8', newline='') as f:
             if unique_rows:
-                writer = csv.DictWriter(f, fieldnames=unique_rows[0].keys())
+                fieldnames = list(unique_rows[0].keys())
+                writer = csv.DictWriter(f, fieldnames=fieldnames)
                 writer.writeheader()
                 writer.writerows(unique_rows)
 
