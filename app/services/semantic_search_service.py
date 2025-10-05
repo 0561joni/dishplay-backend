@@ -17,9 +17,6 @@ SUPABASE_FOLDER = "dishes-photos"  # Folder within bucket
 # Global OpenAI client
 _openai_client = None
 
-# Cache for storage bucket file list
-_storage_files_cache = None
-
 
 def get_openai_client():
     """Get or create OpenAI client"""
@@ -30,21 +27,6 @@ def get_openai_client():
             raise ValueError("OPENAI_API_KEY not set")
         _openai_client = OpenAI(api_key=api_key)
     return _openai_client
-
-
-def get_storage_files() -> set:
-    """Get cached list of files in storage bucket folder"""
-    global _storage_files_cache
-    if _storage_files_cache is None:
-        try:
-            supabase = get_supabase_client()
-            files_in_bucket = supabase.storage.from_(SUPABASE_BUCKET).list(path=SUPABASE_FOLDER)
-            _storage_files_cache = {f.get("name") for f in files_in_bucket}
-            logger.info(f"Cached {len(_storage_files_cache)} files from storage bucket/{SUPABASE_FOLDER}")
-        except Exception as e:
-            logger.error(f"Error listing storage files: {e}")
-            _storage_files_cache = set()
-    return _storage_files_cache
 
 
 async def search_similar_dishes(
@@ -129,58 +111,34 @@ async def search_similar_dishes(
 def get_image_url_from_storage(name_opt: str) -> str:
     """
     Get public URL for an image from Supabase storage.
-    Tries multiple filename patterns to find the image.
+
+    The name_opt format is: {id}-{sequence}-{dish-name}_{description}
+    e.g., 5334-0004-yaki-udon-organic-tofu_fried-udon-noodles-with-vegetables-egg-teriyaki
+
+    Images are stored with _00001_.png suffix appended to the full name_opt.
 
     Args:
-        name_opt: The name_opt identifier from prompts_meta table
+        name_opt: The name_opt identifier from the database
 
     Returns:
-        Public URL to the image, or empty string if not found
+        Public URL to the image
     """
     try:
         supabase = get_supabase_client()
 
-        # Try different filename patterns in order of likelihood
-        patterns = [
-            f"{name_opt}.png",              # Standard .png
-            f"{name_opt}_00001_.png",       # With _00001_ suffix
-            f"{name_opt}.jpg",              # Standard .jpg
-            f"{name_opt}_00001_.jpg",       # .jpg with suffix
-        ]
+        # The actual filename pattern includes the full name_opt plus suffix
+        # Example: 5334-0004-yaki-udon-organic-tofu_fried-udon-noodles-with-vegetables-egg-teriyaki_00001_.png
+        filename = f"{name_opt}_00001_.png"
+        file_path = f"{SUPABASE_FOLDER}/{filename}"
 
-        # Get cached file list
-        available_files = get_storage_files()
+        public_url = supabase.storage.from_(SUPABASE_BUCKET).get_public_url(file_path)
 
-        logger.debug(f"Looking for image with name_opt: {name_opt}")
-        logger.debug(f"Available files in cache: {len(available_files)}")
+        # Remove trailing '?' that Supabase client adds
+        if public_url.endswith('?'):
+            public_url = public_url[:-1]
 
-        # Find the first matching pattern
-        for pattern in patterns:
-            if pattern in available_files:
-                # Include folder path in the URL
-                file_path = f"{SUPABASE_FOLDER}/{pattern}"
-                public_url = supabase.storage.from_(SUPABASE_BUCKET).get_public_url(file_path)
-
-                # Remove trailing '?' that Supabase client adds
-                if public_url.endswith('?'):
-                    public_url = public_url[:-1]
-
-                logger.info(f"Found image for {name_opt}: {pattern}")
-                return public_url
-
-        # If no exact match, try to find files that start with name_opt
-        matching_files = [f for f in available_files if f.startswith(name_opt)]
-        if matching_files:
-            logger.info(f"Found partial match for {name_opt}: {matching_files[0]}")
-            file_path = f"{SUPABASE_FOLDER}/{matching_files[0]}"
-            public_url = supabase.storage.from_(SUPABASE_BUCKET).get_public_url(file_path)
-            if public_url.endswith('?'):
-                public_url = public_url[:-1]
-            return public_url
-
-        logger.warning(f"No image file found for {name_opt} (tried: {', '.join(patterns)})")
-        logger.debug(f"Files starting with similar pattern: {[f for f in list(available_files)[:5]]}")
-        return ""
+        logger.info(f"Generated image URL for {name_opt}: {public_url}")
+        return public_url
 
     except Exception as e:
         logger.error(f"Error getting image URL for {name_opt}: {str(e)}")
