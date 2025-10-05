@@ -338,7 +338,7 @@ async def upload_menu(
                 logger.info(f"Phase 1: Starting semantic search for {len(items_for_processing)} items")
                 await progress_tracker.update_progress(menu_id, "semantic_search", 55)
 
-                semantic_results = await search_dishes_batch(items_for_processing, top_k=3)
+                semantic_results = await search_dishes_batch(items_for_processing, top_k=1)
 
                 semantic_time = (datetime.utcnow() - semantic_start).total_seconds()
                 logger.info(f"Semantic search completed in {semantic_time:.2f}s")
@@ -349,12 +349,12 @@ async def upload_menu(
                     matches = semantic_results.get(item_id, [])
 
                     if matches:
-                        # Use semantic search results (top 3 images)
-                        image_urls = [(match['image_url'], f"semantic:{match['similarity']:.2f}")
-                                      for match in matches]
+                        # Use semantic search result (single best match)
+                        best_match = matches[0]
+                        image_urls = [(best_match['image_url'], f"semantic:{best_match['similarity']:.2f}")]
                         image_results[item_id] = image_urls
                         items_with_semantic.append(item)
-                        logger.info(f"✓ Semantic match for '{item['name']}': {len(matches)} results")
+                        logger.info(f"✓ Semantic match for '{item['name']}': {best_match['title']} (similarity: {best_match['similarity']:.2f})")
                     else:
                         # No good semantic match - need Google search
                         items_needing_google.append(item)

@@ -32,7 +32,7 @@ def get_openai_client():
 async def search_similar_dishes(
     query_name: str,
     query_description: Optional[str] = None,
-    top_k: int = 3,
+    top_k: int = 1,
     threshold: float = SIMILARITY_THRESHOLD
 ) -> List[Dict[str, any]]:
     """
@@ -41,11 +41,12 @@ async def search_similar_dishes(
     Args:
         query_name: Name of the dish to search for
         query_description: Optional description of the dish
-        top_k: Number of top results to return (default: 3)
-        threshold: Minimum similarity threshold (default: 0.8)
+        top_k: Number of top results to return (default: 1 - only best match)
+        threshold: Minimum similarity threshold (default: 0.7)
 
     Returns:
         List of dicts with keys: name_opt, title, description, type, similarity, image_url
+        Returns only the single best match (top_k=1)
     """
     try:
         # Build query text (combining name and description)
@@ -195,7 +196,7 @@ async def log_missing_dish(
 
 async def search_dishes_batch(
     items: List[Dict[str, str]],
-    top_k: int = 3,
+    top_k: int = 1,
     threshold: float = SIMILARITY_THRESHOLD
 ) -> Dict[str, List[Dict[str, any]]]:
     """
@@ -203,11 +204,11 @@ async def search_dishes_batch(
 
     Args:
         items: List of dicts with 'id', 'name', and optional 'description'
-        top_k: Number of top results per item
+        top_k: Number of top results per item (default: 1 - only best match)
         threshold: Minimum similarity threshold
 
     Returns:
-        Dict mapping item_id to list of matching dishes
+        Dict mapping item_id to list of matching dishes (single best match per item)
     """
     results = {}
 
