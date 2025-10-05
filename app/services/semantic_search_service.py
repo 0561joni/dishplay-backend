@@ -150,6 +150,9 @@ def get_image_url_from_storage(name_opt: str) -> str:
         # Get cached file list
         available_files = get_storage_files()
 
+        logger.debug(f"Looking for image with name_opt: {name_opt}")
+        logger.debug(f"Available files in cache: {len(available_files)}")
+
         # Find the first matching pattern
         for pattern in patterns:
             if pattern in available_files:
@@ -162,7 +165,17 @@ def get_image_url_from_storage(name_opt: str) -> str:
                 logger.info(f"Found image for {name_opt}: {pattern}")
                 return public_url
 
+        # If no exact match, try to find files that start with name_opt
+        matching_files = [f for f in available_files if f.startswith(name_opt)]
+        if matching_files:
+            logger.info(f"Found partial match for {name_opt}: {matching_files[0]}")
+            public_url = supabase.storage.from_(SUPABASE_BUCKET).get_public_url(matching_files[0])
+            if public_url.endswith('?'):
+                public_url = public_url[:-1]
+            return public_url
+
         logger.warning(f"No image file found for {name_opt} (tried: {', '.join(patterns)})")
+        logger.debug(f"Files starting with similar pattern: {[f for f in list(available_files)[:5]]}")
         return ""
 
     except Exception as e:
