@@ -97,13 +97,16 @@ class ProgressTracker:
                 "duration": (datetime.utcnow() - data["current_stage_start"]).total_seconds()
             })
             data["current_stage_start"] = datetime.utcnow()
-            
-            # Add any extra data
+
+            # Add any extra data (but handle item_image_update specially to avoid overwriting)
             if extra_data:
-                data.update(extra_data)
-            
-            # Notify subscribers
-            await self._notify_subscribers(task_id, data)
+                # Don't store item_image_update in the persistent data - only send it in notifications
+                # This prevents each new item update from overwriting the previous one
+                extra_data_to_store = {k: v for k, v in extra_data.items() if k != "item_image_update"}
+                data.update(extra_data_to_store)
+
+            # Notify subscribers (passing all extra_data including item_image_update)
+            await self._notify_subscribers(task_id, data, extra_data)
     
     async def complete_task(self, task_id: str, success: bool = True) -> None:
         """Mark a task as completed"""
@@ -151,8 +154,8 @@ class ProgressTracker:
                 # Include optional fields if they exist
                 if "items_snapshot" in data:
                     result["items_snapshot"] = data["items_snapshot"]
-                if "item_image_update" in data:
-                    result["item_image_update"] = data["item_image_update"]
+                # Note: item_image_update is not stored in persistent data
+                # It's only sent via WebSocket notifications
 
                 return result
             return None
@@ -168,7 +171,7 @@ class ProgressTracker:
             if task_id in self._subscribers:
                 self._subscribers[task_id].remove(callback)
     
-    async def _notify_subscribers(self, task_id: str, data: Dict[str, Any]):
+    async def _notify_subscribers(self, task_id: str, data: Dict[str, Any], extra_data: Optional[Dict[str, Any]] = None):
         """Notify all subscribers of progress update"""
         # Prepare the notification data with menu_id
         notification_data = {
@@ -182,11 +185,14 @@ class ProgressTracker:
             "menu_title": data.get("menu_title"),
         }
 
-        # Include optional fields if they exist
+        # Include optional fields from stored data
         if "items_snapshot" in data:
             notification_data["items_snapshot"] = data["items_snapshot"]
-        if "item_image_update" in data:
-            notification_data["item_image_update"] = data["item_image_update"]
+
+        # Include optional fields from extra_data (like item_image_update that we don't want to store)
+        if extra_data:
+            if "item_image_update" in extra_data:
+                notification_data["item_image_update"] = extra_data["item_image_update"]
 
         for callback in self._subscribers.get(task_id, []):
             try:

@@ -13,7 +13,7 @@ from app.services.image_processor import process_and_optimize_image, validate_im
 from app.services.openai_service import extract_menu_items
 from app.services.google_search_service import search_images_batch
 from app.services.dalle_service import get_fallback_image, generate_images_batch
-from app.services.semantic_search_service import search_dishes_batch
+from app.services.semantic_search_service import search_dishes_batch, log_missing_dish
 from app.core.async_supabase import async_supabase_client
 from app.models.menu import MenuResponse, MenuItem
 from app.services.progress_tracker import progress_tracker
@@ -327,6 +327,12 @@ async def upload_menu(
             if DISABLE_SEMANTIC_SEARCH:
                 logger.info(f"Semantic search disabled - using Google search for all {len(items_for_processing)} items")
                 items_needing_google = items_for_processing
+
+                # Log all items to items_without_pictures since we're not searching the database
+                for item in items_for_processing:
+                    await log_missing_dish(item['name'], item.get('description'))
+                    logger.info(f"Logged '{item['name']}' to items_without_pictures (semantic search disabled)")
+
                 await progress_tracker.update_progress(menu_id, "semantic_skipped", 60)
             else:
                 logger.info(f"Phase 1: Starting semantic search for {len(items_for_processing)} items")
