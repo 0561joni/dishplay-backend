@@ -16,6 +16,9 @@ SUPABASE_BUCKET = "dishes-photos"
 # Global OpenAI client
 _openai_client = None
 
+# Cache for storage bucket file list
+_storage_files_cache = None
+
 
 def get_openai_client():
     """Get or create OpenAI client"""
@@ -26,6 +29,21 @@ def get_openai_client():
             raise ValueError("OPENAI_API_KEY not set")
         _openai_client = OpenAI(api_key=api_key)
     return _openai_client
+
+
+def get_storage_files() -> set:
+    """Get cached list of files in storage bucket"""
+    global _storage_files_cache
+    if _storage_files_cache is None:
+        try:
+            supabase = get_supabase_client()
+            files_in_bucket = supabase.storage.from_(SUPABASE_BUCKET).list(path="")
+            _storage_files_cache = {f.get("name") for f in files_in_bucket}
+            logger.info(f"Cached {len(_storage_files_cache)} files from storage bucket")
+        except Exception as e:
+            logger.error(f"Error listing storage files: {e}")
+            _storage_files_cache = set()
+    return _storage_files_cache
 
 
 async def search_similar_dishes(
@@ -110,23 +128,42 @@ async def search_similar_dishes(
 def get_image_url_from_storage(name_opt: str) -> str:
     """
     Get public URL for an image from Supabase storage.
+    Tries multiple filename patterns to find the image.
 
     Args:
         name_opt: The name_opt identifier from prompts_meta table
 
     Returns:
-        Public URL to the image
+        Public URL to the image, or empty string if not found
     """
     try:
         supabase = get_supabase_client()
 
-        # Images are stored with .jpg extension
-        file_path = f"{name_opt}.jpg"
+        # Try different filename patterns in order of likelihood
+        patterns = [
+            f"{name_opt}.png",              # Standard .png
+            f"{name_opt}_00001_.png",       # With _00001_ suffix
+            f"{name_opt}.jpg",              # Standard .jpg
+            f"{name_opt}_00001_.jpg",       # .jpg with suffix
+        ]
 
-        # Get public URL
-        public_url = supabase.storage.from_(SUPABASE_BUCKET).get_public_url(file_path)
+        # Get cached file list
+        available_files = get_storage_files()
 
-        return public_url
+        # Find the first matching pattern
+        for pattern in patterns:
+            if pattern in available_files:
+                public_url = supabase.storage.from_(SUPABASE_BUCKET).get_public_url(pattern)
+
+                # Remove trailing '?' that Supabase client adds
+                if public_url.endswith('?'):
+                    public_url = public_url[:-1]
+
+                logger.info(f"Found image for {name_opt}: {pattern}")
+                return public_url
+
+        logger.warning(f"No image file found for {name_opt} (tried: {', '.join(patterns)})")
+        return ""
 
     except Exception as e:
         logger.error(f"Error getting image URL for {name_opt}: {str(e)}")
