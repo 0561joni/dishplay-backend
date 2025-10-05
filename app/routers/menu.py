@@ -61,10 +61,8 @@ def get_mock_menu_items():
 
 def get_mock_images():
     """Return mock image URLs for testing"""
-    return [
-        "https://images.unsplash.com/photo-1565299624946-b28f40a0ca4b?w=400",
-        "https://images.unsplash.com/photo-1512621776951-a57141f2eefd?w=400"
-    ]
+    # Use the fallback image for mock data instead of potentially broken external URLs
+    return [get_fallback_image()]
 
 def resolve_menu_title(extraction_result: Dict, items: List[Dict]) -> str:
     """Determine a human-friendly menu title from extraction data."""
