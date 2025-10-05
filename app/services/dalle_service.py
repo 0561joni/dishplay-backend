@@ -407,4 +407,5 @@ async def generate_images_batch(items: List[Dict[str, str]], limit_per_item: int
 
 def get_fallback_image() -> str:
     """Return a fallback image URL when generation fails"""
-    return "https://via.placeholder.com/1024x1024.png?text=Image+Not+Available"
+    # Use a reliable placeholder service (placehold.co is more reliable than via.placeholder.com)
+    return "https://placehold.co/1024x1024/e2e8f0/64748b?text=Image+Not+Available"
