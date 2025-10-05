@@ -11,7 +11,8 @@ logger = logging.getLogger(__name__)
 # Configuration
 OPENAI_EMBEDDING_MODEL = "text-embedding-3-small"  # Fast and cheap OpenAI model
 SIMILARITY_THRESHOLD = 0.7  # Minimum cosine similarity for a match
-SUPABASE_BUCKET = "dishes-photos"
+SUPABASE_BUCKET = "menu-images"  # Bucket name
+SUPABASE_FOLDER = "dishes-photos"  # Folder within bucket
 
 # Global OpenAI client
 _openai_client = None
@@ -32,14 +33,14 @@ def get_openai_client():
 
 
 def get_storage_files() -> set:
-    """Get cached list of files in storage bucket"""
+    """Get cached list of files in storage bucket folder"""
     global _storage_files_cache
     if _storage_files_cache is None:
         try:
             supabase = get_supabase_client()
-            files_in_bucket = supabase.storage.from_(SUPABASE_BUCKET).list(path="")
+            files_in_bucket = supabase.storage.from_(SUPABASE_BUCKET).list(path=SUPABASE_FOLDER)
             _storage_files_cache = {f.get("name") for f in files_in_bucket}
-            logger.info(f"Cached {len(_storage_files_cache)} files from storage bucket")
+            logger.info(f"Cached {len(_storage_files_cache)} files from storage bucket/{SUPABASE_FOLDER}")
         except Exception as e:
             logger.error(f"Error listing storage files: {e}")
             _storage_files_cache = set()
@@ -156,7 +157,9 @@ def get_image_url_from_storage(name_opt: str) -> str:
         # Find the first matching pattern
         for pattern in patterns:
             if pattern in available_files:
-                public_url = supabase.storage.from_(SUPABASE_BUCKET).get_public_url(pattern)
+                # Include folder path in the URL
+                file_path = f"{SUPABASE_FOLDER}/{pattern}"
+                public_url = supabase.storage.from_(SUPABASE_BUCKET).get_public_url(file_path)
 
                 # Remove trailing '?' that Supabase client adds
                 if public_url.endswith('?'):
@@ -169,7 +172,8 @@ def get_image_url_from_storage(name_opt: str) -> str:
         matching_files = [f for f in available_files if f.startswith(name_opt)]
         if matching_files:
             logger.info(f"Found partial match for {name_opt}: {matching_files[0]}")
-            public_url = supabase.storage.from_(SUPABASE_BUCKET).get_public_url(matching_files[0])
+            file_path = f"{SUPABASE_FOLDER}/{matching_files[0]}"
+            public_url = supabase.storage.from_(SUPABASE_BUCKET).get_public_url(file_path)
             if public_url.endswith('?'):
                 public_url = public_url[:-1]
             return public_url
